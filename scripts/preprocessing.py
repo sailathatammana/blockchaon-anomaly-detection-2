@@ -144,7 +144,7 @@ class EducationalDataPreprocessor:
                                 exclude_cols: list = None) -> Tuple[np.ndarray, list]:
         """
         Prepare data for autoencoder training
-        Returns normalized feature matrix and feature names
+        Returns feature matrix and feature names
         """
         if exclude_cols is None:
             exclude_cols = ['id_student', 'code_module', 'code_presentation', 
@@ -162,12 +162,9 @@ class EducationalDataPreprocessor:
         # Handle missing values
         df_filled = self.handle_missing_values(df_encoded)
         
-        # Scale features
-        df_scaled = self.scale_features(df_filled, fit=True)
-        
         self.feature_names = feature_cols
         
-        return df_scaled.values, feature_cols
+        return  df_filled,feature_cols
     
 
 if __name__ == "__main__":
