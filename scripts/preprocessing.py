@@ -60,8 +60,8 @@ class EducationalDataPreprocessor:
     
     def normalize_features(self, X: pd.DataFrame) -> Tuple[object, pd.DataFrame]:
         """Standardize features to zero mean, unit variance.
-    
-        Transformation: x_scaled = (x - mean) / std_dev
+        
+        Applies StandardScaler transformation: x_scaled = (x - mean) / std_dev
         
         Why normalize?
         - Neural networks converge much faster on normalized data
@@ -82,10 +82,11 @@ class EducationalDataPreprocessor:
             X: Features to normalize (typically training data)
         
         Returns:
-            scaler: Fitted StandardScaler (save to apply same transformation to test data)
-            X_scaled: Normalized features (mean≈0, std≈1)
+            Tuple of:
+                - scaler: Fitted StandardScaler (save to apply transformation to test data)
+                - X_scaled: Normalized features as numpy array (mean≈0, std≈1)
         """
-        # Create scaler and fit on this data
+        # Create new scaler instance
         self.scaler = StandardScaler()
         # fit_transform: learn mean/std from X, then apply transformation
         X_scaled = self.scaler.fit_transform(X)
