@@ -58,19 +58,39 @@ class EducationalDataPreprocessor:
         
         return df_filled
     
-    def scale_features(self, df: pd.DataFrame, fit: bool = True) -> pd.DataFrame:
-        """Standardize numeric features"""
-        df_scaled = df.copy()
-        
-        numeric_cols = df_scaled.select_dtypes(include=[np.number]).columns
-        
-        if fit:
-            df_scaled[numeric_cols] = self.scaler.fit_transform(df_scaled[numeric_cols])
-        else:
-            df_scaled[numeric_cols] = self.scaler.transform(df_scaled[numeric_cols])
-        
-        return df_scaled
+    def normalize_features(self, X: pd.DataFrame) -> Tuple[object, pd.DataFrame]:
+        """Standardize features to zero mean, unit variance.
     
+        Transformation: x_scaled = (x - mean) / std_dev
+        
+        Why normalize?
+        - Neural networks converge much faster on normalized data
+        - Prevents features with large ranges from dominating (e.g., age vs. income)
+        - Makes learning rate more stable across all features
+        
+        Example:
+        Before: GPA ∈ [0,4], Study_Hours ∈ [0,200]
+        → Study_Hours has 50× larger range, dominates learning
+        After: GPA ∈ [-1.5, 2.5], Study_Hours ∈ [-1.2, 2.8]
+        → Both features have similar scale, equal importance
+        
+        CRITICAL: fit_transform(X_train) then transform(X_test)
+        - Never fit on test set (prevents data leakage)
+        - Both use same mean/std from training distribution
+        
+        Args:
+            X: Features to normalize (typically training data)
+        
+        Returns:
+            scaler: Fitted StandardScaler (save to apply same transformation to test data)
+            X_scaled: Normalized features (mean≈0, std≈1)
+        """
+        # Create scaler and fit on this data
+        self.scaler = StandardScaler()
+        # fit_transform: learn mean/std from X, then apply transformation
+        X_scaled = self.scaler.fit_transform(X)
+        return self.scaler, X_scaled
+
     def create_student_profiles(self, df: pd.DataFrame) -> pd.DataFrame:
         """
         Create student engagement and performance profiles

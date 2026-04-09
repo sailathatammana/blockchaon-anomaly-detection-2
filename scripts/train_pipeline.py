@@ -127,14 +127,28 @@ def main(data_dir: str = "data", results_dir: str = "results"):
         print(f"  Training set:   {X_train.shape[0]} samples ({X_train.shape[0]/len(X)*100:.1f}%)")
         print(f"  Test set:       {X_test.shape[0]} samples ({X_test.shape[0]/len(X)*100:.1f}%)")
         
-        # PIPELINE COMPLETE
+        # STEP 4: NORMALIZE FEATURES
+        # Normalize features to [0, 1] range. Fit scaler ONLY on training data
+        # to prevent data leakage, then apply to test data.
+        print("\n" + "=" * 70)
+        print("STEP 4: FEATURE NORMALIZATION")
+        print("=" * 70)
+        
+        scaler, X_train_scaled = preprocessor.normalize_features(X_train)
+        X_test_scaled = scaler.transform(X_test)
+        print(pd.DataFrame(X_train_scaled, columns=feature_names).head())
+        
+        print(f"\n✓ Features normalized to [0, 1] range")
+        print(f"  Training set shape:   {X_train_scaled.shape}")
+        print(f"  Test set shape:       {X_test_scaled.shape}")
+        
         print("\n" + "=" * 70)
         print("PIPELINE STATUS: ✓ COMPLETE")
         print("=" * 70)
-        print(f"Next step: Train autoencoder on {X_train.shape[0]} student profiles")
-        print(f"Evaluate on {X_test.shape[0]} samples\n")
+        print(f"Next step: Train autoencoder on {X_train_scaled.shape[0]} student profiles")
+        print(f"Evaluate on {X_test_scaled.shape[0]} normalized samples\n")
 
-        return X_train, X_test, feature_names
+        return X_train_scaled, X_test_scaled, feature_names, scaler
             
     except Exception as e:
         print("\n" + "=" * 70)
@@ -143,12 +157,12 @@ def main(data_dir: str = "data", results_dir: str = "results"):
         print(f"\nError: {e}")
         import traceback
         traceback.print_exc()
-        return None, None, None
+        return None, None, None, None
 
 
 if __name__ == "__main__":
     # Run the complete pipeline
-    X_train, X_test, feature_names = main(
+    X_train_scaled, X_test_scaled, feature_names, scaler = main(
         data_dir="data",
         results_dir="results"
     )
