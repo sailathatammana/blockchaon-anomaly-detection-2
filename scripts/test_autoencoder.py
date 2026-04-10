@@ -3,8 +3,9 @@ import numpy as np
 from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score, confusion_matrix
 
 # Import our pipeline to get the processed data splits
+import config
 from train_pipeline import main as run_pipeline
-from autoencoder import train_detector, predict_anomalies, score_anomalies
+from autoencoder import train_detector, predict_anomalies, score_anomalies, optimize_threshold
 
 def main():
     print("=== Extracting Data from Train Pipeline ===")
@@ -23,9 +24,9 @@ def main():
     # Use 20 epochs for testing, 2% assumed contamination
     model, threshold = train_detector(
         X_train_scaled, 
-        contamination=0.02, 
-        epochs=80, 
-        batch_size=16
+        contamination=config.INJECTION_FRAC, 
+        epochs=config.EPOCHS, 
+        batch_size=config.BATCH_SIZE
     )
     
     print("\nTraining completed successfully!")
