@@ -136,8 +136,7 @@ def main(data_dir: str = "data", results_dir: str = "results"):
         
         scaler, X_train_scaled = preprocessor.normalize_features(X_train)
         X_test_scaled = scaler.transform(X_test)
-        print(pd.DataFrame(X_train_scaled, columns=feature_names).head())
-        
+
         print(f"\n✓ Features normalized to [0, 1] range")
         print(f"  Training set shape:   {X_train_scaled.shape}")
         print(f"  Test set shape:       {X_test_scaled.shape}")

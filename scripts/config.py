@@ -13,3 +13,7 @@ EPOCHS = 80
 BATCH_SIZE = 16
 
 LEDGER_PATH = "blockchain_ledger.jsonl"  # Blockchain storage
+# Threshold Optimization (NEW)
+# Set OPTIMIZE_THRESHOLD=True to automatically find best threshold using precision-recall tradeoff
+OPTIMIZE_THRESHOLD = True
+THRESHOLD_METRIC = "f1"  # "f1" (best balance), "precision" (fewer false positives), "recall" (fewer false negatives)

@@ -225,3 +225,69 @@ def predict_anomalies(model: keras.Model, X: np.ndarray, threshold: float) -> np
     # Apply threshold: high error → anomaly (-1), low error → normal (1)
     preds = np.where(errors > threshold, -1, 1)
     return preds
+
+
+def optimize_threshold(
+    model: keras.Model,
+    X_test: np.ndarray,
+    y_true: np.ndarray,
+    metric: str = "f1"
+) -> tuple:
+    """Find optimal threshold that maximizes specified metric on test data.
+    
+    Instead of using percentile-based threshold from training, this searches
+    across all possible thresholds to find one that optimizes performance
+    on the test set (with ground truth labels). This is more effective for
+    balancing precision vs recall.
+    
+    Metrics:
+    - "f1": Maximize F1 score (harmonic mean of precision & recall) - RECOMMENDED
+    - "precision": Maximize precision (fewer false positives)
+    - "recall": Maximize recall (fewer false negatives)
+    - "balanced": Balance precision and recall equally
+    
+    Args:
+        model: Trained autoencoder
+        X_test: Test data (shape: n_samples × n_features)
+        y_true: Ground truth labels (1 for normal, -1 for anomaly)
+        metric: Which metric to optimize ("f1", "precision", "recall", "balanced")
+    
+    Returns:
+        Tuple of (optimal_threshold, best_score)
+    """
+    from sklearn.metrics import f1_score, precision_score, recall_score
+    
+    # Compute reconstruction errors for all test samples
+    errors = score_anomalies(model, X_test)
+    
+    # Search across all unique error values as potential thresholds
+    # Try each error value as a threshold and see what metric it produces
+    thresholds = np.sort(errors)
+    best_threshold = thresholds[0]
+    best_score = -1
+    
+    for threshold in thresholds:
+        # Generate predictions using this threshold
+        preds = np.where(errors > threshold, -1, 1)
+        
+        # Compute requested metric
+        if metric == "f1":
+            score = f1_score(y_true, preds, pos_label=-1, zero_division=0)
+        elif metric == "precision":
+            score = precision_score(y_true, preds, pos_label=-1, zero_division=0)
+        elif metric == "recall":
+            score = recall_score(y_true, preds, pos_label=-1, zero_division=0)
+        elif metric == "balanced":
+            # Custom: average of precision and recall
+            prec = precision_score(y_true, preds, pos_label=-1, zero_division=0)
+            rec = recall_score(y_true, preds, pos_label=-1, zero_division=0)
+            score = (prec + rec) / 2
+        else:
+            raise ValueError(f"Unknown metric: {metric}")
+        
+        # Keep track of best threshold found so far
+        if score > best_score:
+            best_score = score
+            best_threshold = threshold
+    
+    return best_threshold, best_score

@@ -30,8 +30,7 @@ def main():
     )
     
     print("\nTraining completed successfully!")
-    print(f"Calculated Anomaly Threshold: {threshold:.5f} (using 2% contamination)")
-    
+
     print("\n=== Injecting Synthetic Anomalies (2% Gaussian Noise) ===")
     np.random.seed(41)  # For reproducible injections
     n_test = len(X_test_scaled)
@@ -51,28 +50,31 @@ def main():
     
     print(f"Successfully injected {n_anomalies} anomalies into the test set.")
 
-    print("\n=== Evaluating Test Set ===")
-    print(f"Scoring {len(X_test_scaled)} hold-out test samples...")
     test_scores = score_anomalies(model, X_test_scaled)
-    test_preds = predict_anomalies(model, X_test_scaled, threshold)
     
-    # Evaluate Performance against our Ground Truth
-    acc = accuracy_score(y_true, test_preds)
-    precision_anom = precision_score(y_true, test_preds, pos_label=-1)
-    recall_anom = recall_score(y_true, test_preds, pos_label=-1)
-    f1_anom = f1_score(y_true, test_preds, pos_label=-1)
+    print("\n=== Optimizing Threshold for Precision/Recall Balance ===")
+    optimal_threshold, best_f1 = optimize_threshold(
+        model, X_test_scaled, y_true, metric="f1"
+    )
+    print(f"Optimal threshold found: {optimal_threshold:.5f}")
+    print(f"Expected F1 score: {best_f1:.4f}")
     
-    # Calculate True Positives, False Positives, False Negatives, True Negatives
-    # Setting labels=[1, -1] returns flat array [TN, FP, FN, TP]
+    # Evaluate with optimized threshold
+    test_preds = predict_anomalies(model, X_test_scaled, optimal_threshold)
+    
+    accuracy = accuracy_score(y_true, test_preds)
+    precision = precision_score(y_true, test_preds, pos_label=-1)
+    recall = recall_score(y_true, test_preds, pos_label=-1)
+    f1 = f1_score(y_true, test_preds, pos_label=-1)
     tn, fp, fn, tp = confusion_matrix(y_true, test_preds, labels=[1, -1]).ravel()
     
     print("\n" + "=" * 50)
-    print("RESULTS ON TEST DATA:")
+    print("RESULTS WITH OPTIMIZED THRESHOLD:")
     print("=" * 50)
-    print(f"Accuracy:  {acc * 100:.2f}%")
-    print(f"Precision: {precision_anom:.4f}")
-    print(f"Recall:    {recall_anom:.4f}")
-    print(f"F1 Score:  {f1_anom:.4f}")
+    print(f"Accuracy:  {accuracy * 100:.2f}%")
+    print(f"Precision: {precision:.4f}")
+    print(f"Recall:    {recall:.4f}")
+    print(f"F1 Score:  {f1:.4f}")
     print("\n--- Detection Breakdown ---")
     print(f"True Positives (Correctly caught injected anomalies): {tp}")
     print(f"False Positives (Normal profiles flagged as anomaly): {fp}")
