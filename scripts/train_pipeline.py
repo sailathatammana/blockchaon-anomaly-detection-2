@@ -81,6 +81,10 @@ def main(data_dir: str = "data", results_dir: str = "results"):
         print(f"\n✓ Merged dataset shape: {merged_df.shape}")
         print(f"  Rows:    {merged_df.shape[0]} samples")
         print(f"  Columns: {merged_df.shape[1]} features")
+        print(f"  Missing values: {merged_df.isnull().sum().sum()}")
+        merged_df.to_csv(results_path / "merged_dataset.csv", index=False)
+        print(f"\n✓ Merged dataset saved to {results_path / 'merged_dataset.csv'}")
+
         
         # STEP 2: PREPROCESS DATA
         # Create student profiles and prepare features for autoencoder

@@ -99,7 +99,6 @@ class EducationalDataLoader:
             merged = merged.merge(vle_agg, on='id_student', how='left')
         
         # Fill NaN values
-        merged = merged.fillna(0)
         
         return merged
     
