@@ -12,7 +12,7 @@ import sys
 # - PYTHONHASHSEED: Makes Python's hash function deterministic
 # - TF_CPP_MIN_LOG_LEVEL: Reduces TensorFlow logging noise (2 = warnings only)
 # - TF_DETERMINISTIC_OPS: Forces TensorFlow to use deterministic algorithms
-os.environ["PYTHONHASHSEED"] = "42"
+os.environ["PYTHONHASHSEED"] = "41"
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
 os.environ["TF_DETERMINISTIC_OPS"] = "1"
 

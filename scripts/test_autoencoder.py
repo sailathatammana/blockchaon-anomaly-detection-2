@@ -21,43 +21,48 @@ def main():
     print("\n=== Initializing and Training Autoencoder ===")
     print(f"Training on {len(X_train_scaled)} samples (This may take a moment...)")
     
-    # Use 20 epochs for testing, 2% assumed contamination
     model, threshold = train_detector(
         X_train_scaled, 
         contamination=config.INJECTION_FRAC, 
+        bottleneck_dim=config.BOTTLENECK_DIM,
         epochs=config.EPOCHS, 
-        batch_size=config.BATCH_SIZE
+        batch_size=config.BATCH_SIZE,
+        random_state=config.SEED
     )
     
     print("\nTraining completed successfully!")
 
-    print("\n=== Injecting Synthetic Anomalies (2% Gaussian Noise) ===")
-    np.random.seed(41)  # For reproducible injections
+    print(f"\n=== Injecting Synthetic Anomalies ({config.INJECTION_FRAC*100:.0f}% Gaussian Noise) ===")
+    np.random.seed(config.SEED)  # For reproducible injections
     n_test = len(X_test_scaled)
-    n_anomalies = int(n_test * 0.02)  # 2% of test set
+    n_anomalies = int(n_test * config.INJECTION_FRAC)  # configure percentage of test set
     
     # Create Ground Truth Array: 1 for normal, -1 for anomaly
     y_true = np.ones(n_test)
     
-    # Randomly select 2% of the test set indices to corrupt
+    # Randomly select test set indices to corrupt
     anomaly_indices = np.random.choice(n_test, size=n_anomalies, replace=False)
     y_true[anomaly_indices] = -1
     
     # Corrupt these samples by adding significant Gaussian noise
-    # Mean 0, StdDev 3 (since data is normalized [-1, 1], STD 3 is massive)
-    noise = np.random.normal(loc=0.0, scale=3.0, size=(n_anomalies, X_test_scaled.shape[1]))
+    noise = np.random.normal(loc=0.0, scale=config.NOISE_SCALE, size=(n_anomalies, X_test_scaled.shape[1]))
     X_test_scaled[anomaly_indices] += noise
     
     print(f"Successfully injected {n_anomalies} anomalies into the test set.")
 
     test_scores = score_anomalies(model, X_test_scaled)
     
-    print("\n=== Optimizing Threshold for Precision/Recall Balance ===")
-    optimal_threshold, best_f1 = optimize_threshold(
-        model, X_test_scaled, y_true, metric="f1"
-    )
-    print(f"Optimal threshold found: {optimal_threshold:.5f}")
-    print(f"Expected F1 score: {best_f1:.4f}")
+    if config.OPTIMIZE_THRESHOLD:
+        print(f"\n=== Optimizing Threshold for {config.THRESHOLD_METRIC.upper()} Balance ===")
+        optimal_threshold, best_score = optimize_threshold(
+            model, X_test_scaled, y_true, metric=config.THRESHOLD_METRIC
+        )
+        print(f"Optimal threshold found: {optimal_threshold:.5f}")
+        print(f"Expected score: {best_score:.4f}")
+    else:
+        print("\n=== Using Default Threshold from Training ===")
+        optimal_threshold = threshold
+        print(f"Default threshold used: {optimal_threshold:.5f}")
     
     # Evaluate with optimized threshold
     test_preds = predict_anomalies(model, X_test_scaled, optimal_threshold)

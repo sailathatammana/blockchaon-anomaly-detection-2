@@ -1,9 +1,9 @@
 """Configuration constants for anomaly detection pipeline."""
 
-SEED = 42  # Random seed for reproducibility
+SEED = 41  # Random seed for reproducibility
 
-TRAIN_SIZE = 0.70
-TEST_SIZE = 0.30
+TRAIN_SIZE = 0.75
+TEST_SIZE = 0.25
 
 INJECTION_FRAC = 0.02  # Synthetic anomalies for evaluation
 NOISE_SCALE = 3.0  # Noise scale in std deviations
