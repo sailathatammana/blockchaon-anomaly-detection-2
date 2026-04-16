@@ -86,6 +86,7 @@ def main():
     print(f"Recall:    {recall:.4f}")
     print(f"F1 Score:  {f1:.4f}")
     print(f"ROC AUC:   {roc_auc:.4f}")
+    print(f"Detected: {int(np.sum(test_preds == -1))}/{len(test_preds)}")
     print("\n--- Detection Breakdown ---")
     print(f"True Positives (Correctly caught injected anomalies): {tp}")
     print(f"False Positives (Normal profiles flagged as anomaly): {fp}")
