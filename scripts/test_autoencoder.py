@@ -6,6 +6,7 @@ from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_sc
 import config
 from train_pipeline import main as run_pipeline
 from autoencoder import train_detector, predict_anomalies, score_anomalies, optimize_threshold
+from blockchain_logger import PermissionedBlockchain
 
 def main():
     print("=== Extracting Data from Train Pipeline ===")
@@ -92,6 +93,34 @@ def main():
     print(f"False Positives (Normal profiles flagged as anomaly): {fp}")
     print(f"False Negatives (Missed injected anomalies):          {fn}")
     print(f"True Negatives (Correctly labeled normal profiles):   {tn}")
+
+    # 8) Log detection results to blockchain for audit trail
+    # Uses permissioned blockchain where only authorized users (detector, auditor)
+    # can write/verify logs. This ensures tamper-proof record of anomalies detected.
+    print(f"\n[7] Logging to permissioned blockchain ({config.LEDGER_PATH})...")
+    blockchain = PermissionedBlockchain(ledger_path=config.LEDGER_PATH)
+    
+    # Login as detector user (has write permission)
+    blockchain.login("detector", "detector_password")
+    print(f"  ✓ Authenticated as '{blockchain.current_user.username}' (role: {blockchain.current_user.role})")
+    
+    # Log each detected anomaly
+    anomaly_indices = [int(i) for i, p in enumerate(test_preds) if p == -1]
+    for idx in anomaly_indices:
+        blockchain.log_anomaly(idx, {"score": float(test_scores[idx])})
+    
+    print(f"  ✓ Logged {len(anomaly_indices)} anomalies to blockchain")
+    
+    # Verify blockchain integrity (auditor verification)
+    blockchain.logout()
+    blockchain.login("auditor", "auditor_password")
+    is_valid = blockchain.verify_blockchain()
+    if is_valid:
+        print(f"  ✓ Blockchain verification passed (role: {blockchain.current_user.role})")
+    else:
+        print(f"  ✗ Blockchain verification FAILED - possible tampering detected!")
+    
+    blockchain.logout()
 
 if __name__ == '__main__':
     main()
