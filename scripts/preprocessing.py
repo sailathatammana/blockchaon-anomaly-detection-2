@@ -22,39 +22,30 @@ class EducationalDataPreprocessor:
         self.numeric_features = []
         self.categorical_features = []
         
-    def identify_feature_types(self, df: pd.DataFrame):
-        """Identify numeric and categorical features"""
-        self.numeric_features = df.select_dtypes(include=[np.number]).columns.tolist()
-        self.categorical_features = df.select_dtypes(include=['object']).columns.tolist()
-        print(f"Numeric features ({len(self.numeric_features)}): {self.numeric_features}")
-        print(f"Categorical features ({len(self.categorical_features)}): {self.categorical_features}")
-        
     def encode_categorical_features(self, df: pd.DataFrame, fit: bool = True) -> pd.DataFrame:
         """Encode categorical features"""
         df_encoded = df.copy()
         
-        for col in self.categorical_features:
-            if fit and col not in self.label_encoders:
-                self.label_encoders[col] = LabelEncoder()
-                df_encoded[col] = self.label_encoders[col].fit_transform(
-                    df_encoded[col].astype(str)
-                )
-            elif not fit and col in self.label_encoders:
-                df_encoded[col] = self.label_encoders[col].transform(
-                    df_encoded[col].astype(str)
-                )
+        # Find all text/object columns
+        cat_cols = df_encoded.select_dtypes(include=["object"]).columns.tolist()
+        # Expand each categorical to binary columns, drop first to avoid redundancy
+        df_encoded = pd.get_dummies(df_encoded, columns=cat_cols, drop_first=True)
         
-        return df_encoded
+        return df_encoded, cat_cols
     
-    def handle_missing_values(self, df: pd.DataFrame, strategy: str = 'mean') -> pd.DataFrame:
+    def handle_missing_values(self, df: pd.DataFrame) -> pd.DataFrame:
         """Handle missing values in numeric columns"""
         df_filled = df.copy()
+        # Identify column types
+        num_cols = df_filled.select_dtypes(include=["int64", "float64"]).columns
+        cat_cols = df_filled.select_dtypes(include=["object"]).columns
         
-        imputer = SimpleImputer(strategy=strategy)
-        numeric_cols = df_filled.select_dtypes(include=[np.number]).columns
-        
-        if len(numeric_cols) > 0:
-            df_filled[numeric_cols] = imputer.fit_transform(df_filled[numeric_cols])
+        for col in num_cols:
+            df_filled[col] = df_filled[col].fillna(df_filled[col].median())
+
+        # Fill categorical columns with mode (most common value) of that column
+        for col in cat_cols:
+            df_filled[col] = df_filled[col].fillna(df_filled[col].mode()[0])
         
         return df_filled
     
@@ -167,25 +158,25 @@ class EducationalDataPreprocessor:
         Prepare data for autoencoder training
         Returns feature matrix and feature names
         """
+        df_features = df.copy()
+        
+        # Encode categorical features
+        df_encoded, cat_cols = self.encode_categorical_features(df_features, fit=True)
+        
+        # Handle missing values
+        df_filled = self.handle_missing_values(df_encoded)
+
         if exclude_cols is None:
             exclude_cols = ['id_student', 'code_module', 'code_presentation', 
                            'final_result']
         
         # Select features
-        feature_cols = [col for col in df.columns if col not in exclude_cols]
-        df_features = df[feature_cols].copy()
-        
-        self.identify_feature_types(df_features)
-        
-        # Encode categorical features
-        df_encoded = self.encode_categorical_features(df_features, fit=True)
-        
-        # Handle missing values
-        df_filled = self.handle_missing_values(df_encoded)
-        
+        feature_cols = [col for col in df_filled.columns if col not in exclude_cols]
+        df_features = df_filled[feature_cols].copy()
+                
         self.feature_names = feature_cols
         
-        return  df_filled,feature_cols
+        return  df_features,feature_cols
     
 
 if __name__ == "__main__":
