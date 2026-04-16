@@ -1,6 +1,6 @@
 import sys
 import numpy as np
-from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score, confusion_matrix
+from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score, confusion_matrix, roc_auc_score
 
 # Import our pipeline to get the processed data splits
 import config
@@ -73,6 +73,11 @@ def main():
     f1 = f1_score(y_true, test_preds, pos_label=-1)
     tn, fp, fn, tp = confusion_matrix(y_true, test_preds, labels=[1, -1]).ravel()
     
+    # Calculate ROC AUC using continuous reconstruction error scores
+    # Convert labels: 1 (normal) -> 0, -1 (anomaly) -> 1 for ROC AUC
+    y_true_binary = (y_true == -1).astype(int)
+    roc_auc = roc_auc_score(y_true_binary, test_scores)
+    
     print("\n" + "=" * 50)
     print("RESULTS WITH OPTIMIZED THRESHOLD:")
     print("=" * 50)
@@ -80,6 +85,7 @@ def main():
     print(f"Precision: {precision:.4f}")
     print(f"Recall:    {recall:.4f}")
     print(f"F1 Score:  {f1:.4f}")
+    print(f"ROC AUC:   {roc_auc:.4f}")
     print("\n--- Detection Breakdown ---")
     print(f"True Positives (Correctly caught injected anomalies): {tp}")
     print(f"False Positives (Normal profiles flagged as anomaly): {fp}")
