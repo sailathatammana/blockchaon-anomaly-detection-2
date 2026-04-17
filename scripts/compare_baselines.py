@@ -19,7 +19,7 @@ from sklearn.metrics import (
 
 # Import our modules
 import config
-from train_pipeline import main as run_pipeline
+from pipeline import load_and_preprocess_data
 from autoencoder import train_detector, predict_anomalies, score_anomalies, optimize_threshold
 from isolation_forest_baseline import (
     train_isolation_forest, predict_anomalies_if, score_anomalies_if,
@@ -204,7 +204,7 @@ def main(data_dir: str = "data", results_dir: str = "results"):
     print("STEP 1: EXTRACTING DATA FROM PIPELINE")
     print("=" * 80)
     
-    X_train_scaled, X_test_scaled, feature_names, scaler = run_pipeline(
+    X_train_scaled, X_test_scaled, feature_names, scaler = load_and_preprocess_data(
         data_dir=data_dir,
         results_dir=results_dir
     )
