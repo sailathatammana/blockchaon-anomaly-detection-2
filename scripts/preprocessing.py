@@ -140,15 +140,9 @@ class EducationalDataPreprocessor:
         if 'last_access_day' in df.columns:
             profiles['last_access_day'] = df['last_access_day'].fillna(0)
         
-        # Target variable
+        # Target variable - KEEP AS STRING for labeling function
         if 'final_result' in df.columns:
-            result_map = {
-                'Pass': 0,
-                'Fail': 1,
-                'Withdrawn': 2,
-                'Distinction': 0
-            }
-            profiles['final_result'] = df['final_result'].map(result_map).fillna(0).astype(int)
+            profiles['final_result'] = df['final_result'].astype(str)
         
         return profiles
     
@@ -156,7 +150,7 @@ class EducationalDataPreprocessor:
                                 exclude_cols: list = None) -> Tuple[np.ndarray, list]:
         """
         Prepare data for autoencoder training
-        Returns feature matrix and feature names
+        Returns feature matrix (as numpy array) and feature names
         """
         df_features = df.copy()
         
@@ -176,7 +170,118 @@ class EducationalDataPreprocessor:
                 
         self.feature_names = feature_cols
         
-        return  df_features,feature_cols
+        # Convert to numpy array for compatibility with sklearn operations
+        X = df_features.values.astype(np.float32)
+        
+        return X, feature_cols
+    
+    @staticmethod
+    def create_anomaly_labels(profiles: pd.DataFrame, 
+                            normal_labels: set = None,
+                            abnormal_labels: set = None) -> Tuple[np.ndarray, dict]:
+        """Create binary anomaly labels from student outcomes.
+        
+        REAL DATA LABELING APPROACH:
+        Uses actual student outcomes (final_result) instead of synthetic anomalies.
+        
+        Args:
+            profiles: DataFrame with 'final_result' column
+            normal_labels: Set of outcomes considered normal (e.g., {'Pass', 'Distinction'})
+            abnormal_labels: Set of outcomes considered abnormal (e.g., {'Fail', 'Withdrawn'})
+        
+        Returns:
+            y: Array where 1 = normal, -1 = abnormal, 0 = unknown
+            label_info: Dictionary with statistics about label distribution
+        """
+        if normal_labels is None:
+            normal_labels = {'Pass', 'Distinction'}
+        if abnormal_labels is None:
+            abnormal_labels = {'Fail', 'Withdrawn'}
+        
+        def label_outcome(outcome):
+            """Map outcome to label"""
+            if outcome in normal_labels:
+                return 1
+            elif outcome in abnormal_labels:
+                return -1
+            else:
+                return 0  # Unknown/other
+        
+        y = profiles['final_result'].apply(label_outcome).values
+        
+        # Generate label statistics (convert numpy ints to Python ints for JSON serialization)
+        n_normal = int(np.sum(y == 1))
+        n_abnormal = int(np.sum(y == -1))
+        n_unknown = int(np.sum(y == 0))
+        
+        label_info = {
+            'n_normal': n_normal,
+            'n_abnormal': n_abnormal,
+            'n_unknown': n_unknown,
+            'pct_normal': float(100 * n_normal / (n_normal + n_abnormal + n_unknown) if (n_normal + n_abnormal + n_unknown) > 0 else 0),
+            'pct_abnormal': float(100 * n_abnormal / (n_normal + n_abnormal + n_unknown) if (n_normal + n_abnormal + n_unknown) > 0 else 0),
+            'contamination_rate': float(n_abnormal / (n_normal + n_abnormal) if (n_normal + n_abnormal) > 0 else 0)
+        }
+        
+        return y, label_info
+    
+    @staticmethod
+    def split_normal_abnormal(X: np.ndarray, y: np.ndarray, 
+                            normal_train_fraction: float = 0.75,
+                            random_state: int = 41) -> Tuple[np.ndarray, np.ndarray, 
+                                                             np.ndarray, np.ndarray,
+                                                             np.ndarray, np.ndarray]:
+        """Split data into training (normal only) and test (normal + abnormal).
+        
+        CRITICAL: This implements the core strategy for real data anomaly detection.
+        
+        Strategy:
+        1. Separate normal (y=1) and abnormal (y=-1) students
+        2. Train autoencoder on: normal_train_fraction of NORMAL students
+        3. Test autoencoder on: remaining normal students + ALL abnormal students
+        
+        This ensures autoencoder only learns "normal" patterns during training,
+        then faces true abnormal cases during evaluation.
+        
+        Args:
+            X: Feature matrix
+            y: Label array (1=normal, -1=abnormal)
+            normal_train_fraction: Fraction of normal students to use for training (e.g., 0.75)
+            random_state: Random seed for reproducibility
+        
+        Returns:
+            X_train: Training features (normal students only)
+            X_test: Test features (normal + abnormal students)
+            y_train: Training labels (all 1, since only normal)
+            y_test: Test labels (1 for normal, -1 for abnormal in test set)
+            train_indices: Indices of training samples in original data
+            test_indices: Indices of test samples in original data
+        """
+        np.random.seed(random_state)
+        
+        # Separate normal and abnormal indices
+        normal_idx = np.where(y == 1)[0]
+        abnormal_idx = np.where(y == -1)[0]
+        
+        # Split normal students: train/test
+        n_normal_train = int(len(normal_idx) * normal_train_fraction)
+        np.random.shuffle(normal_idx)
+        
+        train_normal_idx = normal_idx[:n_normal_train]
+        test_normal_idx = normal_idx[n_normal_train:]
+        
+        # Combine test sets: normal + abnormal
+        test_all_idx = np.concatenate([test_normal_idx, abnormal_idx])
+        
+        # Extract features and labels
+        X_train = X[train_normal_idx]
+        X_test = X[test_all_idx]
+        
+        # Ensure proper data types for labels
+        y_train = np.ones(len(train_normal_idx), dtype=int)  # All normal in training (+1)
+        y_test = y[test_all_idx].astype(int)  # Mix of normal (1) and abnormal (-1) in test
+        
+        return X_train, X_test, y_train, y_test, train_normal_idx, test_all_idx
     
 
 if __name__ == "__main__":

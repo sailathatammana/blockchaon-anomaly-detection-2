@@ -1,10 +1,15 @@
 """Compare Autoencoder and Isolation Forest baseline for anomaly detection.
 
-This script runs a fair comparison:
-1. Both models trained on the same data splits
-2. Same synthetic anomalies injected into test set
-3. Same evaluation metrics for fair comparison
-4. Detailed results and visualizations
+UPDATED FOR REAL DATA
+This script now runs fair comparison using real student outcomes:
+
+1. Both models use real labeled data (real normal vs abnormal students)
+2. Autoencoder trained on NORMAL students only
+3. Isolation Forest: tested with multiple strategies (normal_only, all_data, informed)
+4. Evaluation on REAL abnormal students, not synthetic anomalies
+5. Detailed results and metrics comparison
+
+See LABELING_STRATEGY.md for detailed approach documentation.
 """
 import os
 import sys
@@ -22,53 +27,16 @@ import config
 from pipeline import load_and_preprocess_data
 from autoencoder import train_detector, predict_anomalies, score_anomalies, optimize_threshold
 from isolation_forest_baseline import (
-    train_isolation_forest, predict_anomalies_if, score_anomalies_if,
+    train_isolation_forest_real_data, predict_anomalies_if, score_anomalies_if,
     get_isolation_forest_threshold
 )
-
-
-def inject_anomalies(X_test, contamination_frac, noise_scale, seed):
-    """Inject synthetic Gaussian noise anomalies into test set.
-    
-    Args:
-        X_test: Test data
-        contamination_frac: Fraction of test set to corrupt
-        noise_scale: Standard deviation of Gaussian noise
-        seed: Random seed for reproducibility
-    
-    Returns:
-        X_test_corrupted: Test data with injected anomalies
-        y_true: Ground truth labels (1=normal, -1=anomaly)
-        anomaly_indices: Indices of injected anomalies
-    """
-    np.random.seed(seed)
-    n_test = len(X_test)
-    n_anomalies = int(n_test * contamination_frac)
-    
-    # Ground truth: 1 for normal, -1 for anomaly
-    y_true = np.ones(n_test)
-    
-    # Select which samples to corrupt
-    anomaly_indices = np.random.choice(n_test, size=n_anomalies, replace=False)
-    y_true[anomaly_indices] = -1
-    
-    # Create corrupted test set
-    X_test_corrupted = X_test.copy()
-    noise = np.random.normal(
-        loc=0.0,
-        scale=noise_scale,
-        size=(n_anomalies, X_test.shape[1])
-    )
-    X_test_corrupted[anomaly_indices] += noise
-    
-    return X_test_corrupted, y_true, anomaly_indices
 
 
 def evaluate_model(y_true, y_pred, scores, model_name="Model"):
     """Evaluate model with multiple metrics.
     
     Args:
-        y_true: Ground truth labels (1=normal, -1=anomaly)
+        y_true: Ground truth labels (1=normal, -1=abnormal)
         y_pred: Predictions (1=normal, -1=anomaly)
         scores: Anomaly scores (for ROC AUC)
         model_name: Name of model for display
@@ -129,7 +97,7 @@ def format_metrics_table(metrics_ae, metrics_if):
     
     lines = []
     lines.append("\n" + "=" * 80)
-    lines.append("COMPARISON: AUTOENCODER vs ISOLATION FOREST")
+    lines.append("COMPARISON: AUTOENCODER vs ISOLATION FOREST (ON REAL DATA)")
     lines.append("=" * 80)
     lines.append(f"{'Metric':<30} {'Autoencoder':>20} {'Isolation Forest':>20}")
     lines.append("-" * 80)
@@ -150,8 +118,8 @@ def format_metrics_table(metrics_ae, metrics_if):
         lines.append(f"{metric_name:<30} {ae_str:>20} {if_str:>20}")
     
     lines.append("-" * 80)
-    lines.append(f"{'Detections':<30} {metrics_ae['tp']:>20} {metrics_if['tp']:>20}")
-    lines.append(f"{'False Alarms':<30} {metrics_ae['fp']:>20} {metrics_if['fp']:>20}")
+    lines.append(f"{'True Positives':<30} {metrics_ae['tp']:>20} {metrics_if['tp']:>20}")
+    lines.append(f"{'False Positives':<30} {metrics_ae['fp']:>20} {metrics_if['fp']:>20}")
     lines.append("=" * 80)
     
     return "\n".join(lines)
@@ -186,7 +154,7 @@ def plot_roc_curves(y_true, scores_ae, scores_if, save_path="results/roc_compari
 
 
 def main(data_dir: str = "data", results_dir: str = "results"):
-    """Run complete comparison between Autoencoder and Isolation Forest.
+    """Run complete comparison between Autoencoder and Isolation Forest on real data.
     
     Args:
         data_dir: Directory containing source CSV files
@@ -197,52 +165,40 @@ def main(data_dir: str = "data", results_dir: str = "results"):
     
     print("\n" + "█" * 80)
     print("█ BASELINE COMPARISON: AUTOENCODER vs ISOLATION FOREST")
+    print("█ REAL DATA APPROACH (No Synthetic Anomalies)")
     print("█" * 80)
     
-    # STEP 1: Extract preprocessed data
+    # STEP 1: Extract preprocessed data with real labels
     print("\n" + "=" * 80)
-    print("STEP 1: EXTRACTING DATA FROM PIPELINE")
+    print("STEP 1: LOADING DATA WITH REAL ANOMALY LABELS")
     print("=" * 80)
     
-    X_train_scaled, X_test_scaled, feature_names, scaler = load_and_preprocess_data(
-        data_dir=data_dir,
-        results_dir=results_dir
-    )
+    X_train_scaled, X_test_scaled, y_train, y_test, feature_names, scaler, label_info = \
+        load_and_preprocess_data(data_dir=data_dir, results_dir=results_dir)
     
     if X_train_scaled is None:
-        print("❌ Data extraction failed. Stopping.")
+        print("❌ Data loading failed. Stopping.")
         return
     
-    print(f"✓ Training set: {X_train_scaled.shape}")
-    print(f"✓ Test set: {X_test_scaled.shape}")
+    print(f"✓ Training set: {X_train_scaled.shape} (NORMAL students only)")
+    print(f"✓ Test set: {X_test_scaled.shape} (mixed normal and abnormal)")
     print(f"✓ Features: {len(feature_names)}")
+    print(f"✓ Test set composition:")
+    print(f"  - Normal: {np.sum(y_test == 1)}")
+    print(f"  - Abnormal: {np.sum(y_test == -1)}")
     
-    # STEP 2: Inject synthetic anomalies
+    n_normal = np.sum(y_test == 1)
+    n_abnormal = np.sum(y_test == -1)
+    contamination_rate = label_info['contamination_rate']
+    
+    # STEP 2: Train AUTOENCODER on normal data only
     print("\n" + "=" * 80)
-    print(f"STEP 2: INJECTING SYNTHETIC ANOMALIES ({config.INJECTION_FRAC*100:.0f}% Gaussian Noise)")
-    print("=" * 80)
-    
-    X_test_corrupted, y_true, anomaly_indices = inject_anomalies(
-        X_test_scaled.copy(),
-        contamination_frac=config.INJECTION_FRAC,
-        noise_scale=config.NOISE_SCALE,
-        seed=config.SEED
-    )
-    
-    n_anomalies = np.sum(y_true == -1)
-    n_normal = np.sum(y_true == 1)
-    print(f"✓ Injected {n_anomalies} anomalies into {len(X_test_corrupted)} test samples")
-    print(f"  Normal samples: {n_normal}")
-    print(f"  Anomalous samples: {n_anomalies}")
-    
-    # STEP 3: Train AUTOENCODER
-    print("\n" + "=" * 80)
-    print("STEP 3: TRAINING AUTOENCODER")
+    print("STEP 2: TRAINING AUTOENCODER (ON NORMAL STUDENTS ONLY)")
     print("=" * 80)
     
     model_ae, threshold_ae = train_detector(
         X_train_scaled,
-        contamination=config.INJECTION_FRAC,
+        contamination=0.0,  # No contamination in training (normal only)
         bottleneck_dim=config.BOTTLENECK_DIM,
         epochs=config.EPOCHS,
         batch_size=config.BATCH_SIZE,
@@ -250,79 +206,85 @@ def main(data_dir: str = "data", results_dir: str = "results"):
     )
     
     print("✓ Autoencoder training completed")
-    print(f"  Initial threshold: {threshold_ae:.5f}")
+    print(f"  Default threshold: {threshold_ae:.5f}")
     
-    # STEP 4: Train ISOLATION FOREST
+    # STEP 3: Train ISOLATION FOREST with configured strategy
     print("\n" + "=" * 80)
-    print("STEP 4: TRAINING ISOLATION FOREST")
+    print(f"STEP 3: TRAINING ISOLATION FOREST (Strategy: {config.ISOLATION_FOREST_STRATEGY})")
     print("=" * 80)
     
-    model_if = train_isolation_forest(
+    model_if, strategy_info = train_isolation_forest_real_data(
         X_train_scaled,
-        contamination=config.INJECTION_FRAC,
+        y_train=y_train,
+        strategy=config.ISOLATION_FOREST_STRATEGY,
+        contamination=contamination_rate,
+        contamination_buffer=config.CONTAMINATION_BUFFER,
         n_estimators=100,
         random_state=config.SEED
     )
     
+    print("✓ Isolation Forest training completed")
+    print(f"  Strategy: {strategy_info['strategy']}")
+    print(f"  Description: {strategy_info['description']}")
+    print(f"  Contamination parameter: {strategy_info['contamination_param']:.4f}")
+    
     threshold_if = get_isolation_forest_threshold(
         model_if,
         X_train_scaled,
-        contamination=config.INJECTION_FRAC
+        contamination=strategy_info['contamination_param']
     )
-    
-    print("✓ Isolation Forest training completed")
     print(f"  Initial threshold: {threshold_if:.5f}")
     
-    # STEP 5: Score and predict on test set
+    # STEP 4: Score on test set
     print("\n" + "=" * 80)
-    print("STEP 5: EVALUATING MODELS ON TEST SET")
+    print("STEP 4: EVALUATING MODELS ON TEST SET (REAL DATA)")
     print("=" * 80)
     
     # Autoencoder
-    scores_ae = score_anomalies(model_ae, X_test_corrupted)
+    scores_ae = score_anomalies(model_ae, X_test_scaled)
     
     if config.OPTIMIZE_THRESHOLD:
-        print("Optimizing thresholds for best F1 balance...")
+        print("\nOptimizing thresholds for best F1 balance...")
         threshold_ae_opt, _ = optimize_threshold(
-            model_ae, X_test_corrupted, y_true, metric=config.THRESHOLD_METRIC
+            model_ae, X_test_scaled, y_test, metric=config.THRESHOLD_METRIC
         )
         print(f"✓ Autoencoder optimal threshold: {threshold_ae_opt:.5f}")
     else:
         threshold_ae_opt = threshold_ae
+        print(f"✓ Autoencoder threshold: {threshold_ae_opt:.5f}")
     
-    preds_ae = predict_anomalies(model_ae, X_test_corrupted, threshold_ae_opt)
+    preds_ae = predict_anomalies(model_ae, X_test_scaled, threshold_ae_opt)
     
     # Isolation Forest
-    scores_if = score_anomalies_if(model_if, X_test_corrupted)
+    scores_if = score_anomalies_if(model_if, X_test_scaled)
     threshold_if_opt = get_isolation_forest_threshold(
         model_if,
-        X_test_corrupted,
-        contamination=config.INJECTION_FRAC
+        X_test_scaled,
+        contamination=strategy_info['contamination_param']
     )
-    preds_if = predict_anomalies_if(model_if, X_test_corrupted, threshold_if_opt)
-    
     print(f"✓ Isolation Forest threshold: {threshold_if_opt:.5f}")
     
-    # STEP 6: Evaluate both models
+    preds_if = predict_anomalies_if(model_if, X_test_scaled, threshold_if_opt)
+    
+    # STEP 5: Evaluate both models
     print("\n" + "=" * 80)
-    print("STEP 6: COMPUTING EVALUATION METRICS")
+    print("STEP 5: COMPUTING EVALUATION METRICS (ON REAL LABELS)")
     print("=" * 80)
     
-    metrics_ae = evaluate_model(y_true, preds_ae, scores_ae, "Autoencoder")
-    metrics_if = evaluate_model(y_true, preds_if, scores_if, "Isolation Forest")
+    metrics_ae = evaluate_model(y_test, preds_ae, scores_ae, "Autoencoder")
+    metrics_if = evaluate_model(y_test, preds_if, scores_if, "Isolation Forest")
     
     print("✓ Evaluation completed for both models")
     
-    # STEP 7: Display results
+    # STEP 6: Display results
     print(format_metrics_table(metrics_ae, metrics_if))
     
-    # STEP 8: Save detailed results
+    # STEP 7: Save detailed results
     print("\n" + "=" * 80)
-    print("STEP 8: SAVING RESULTS")
+    print("STEP 7: SAVING RESULTS")
     print("=" * 80)
     
     # Save comparison results to JSON
-    # Convert numpy types to Python native types for JSON serialization
     def convert_to_serializable(obj):
         """Convert numpy types to Python native types."""
         if isinstance(obj, dict):
@@ -335,13 +297,22 @@ def main(data_dir: str = "data", results_dir: str = "results"):
             return obj
     
     comparison_results = {
+        "approach": "real_data_comparison",
+        "description": "Comparison using real student outcome labels (Pass/Distinction=normal, Fail/Withdrawn=abnormal)",
+        "data_info": {
+            "total_test_samples": int(len(X_test_scaled)),
+            "normal_test_samples": int(n_normal),
+            "abnormal_test_samples": int(n_abnormal),
+            "contamination_rate": float(contamination_rate)
+        },
+        "training_strategy": {
+            "autoencoder": "Trained on NORMAL students only (unsupervised)",
+            "isolation_forest": strategy_info['description'],
+            "isolation_forest_strategy": config.ISOLATION_FOREST_STRATEGY,
+            "isolation_forest_contamination": float(strategy_info['contamination_param'])
+        },
         "autoencoder": convert_to_serializable(metrics_ae),
         "isolation_forest": convert_to_serializable(metrics_if),
-        "test_set_size": int(len(X_test_corrupted)),
-        "n_anomalies_injected": int(n_anomalies),
-        "n_normal_samples": int(n_normal),
-        "contamination_rate": float(config.INJECTION_FRAC),
-        "noise_scale": float(config.NOISE_SCALE),
     }
     
     results_file = results_path / "model_comparison.json"
@@ -352,12 +323,11 @@ def main(data_dir: str = "data", results_dir: str = "results"):
     
     # Save detailed predictions for debugging
     predictions_df = pd.DataFrame({
-        "y_true": y_true,
+        "y_true": y_test,
         "ae_pred": preds_ae,
         "if_pred": preds_if,
         "ae_score": scores_ae,
         "if_score": scores_if,
-        "is_injected_anomaly": np.isin(np.arange(len(y_true)), anomaly_indices),
     })
     
     predictions_file = results_path / "predictions_comparison.csv"
@@ -365,7 +335,7 @@ def main(data_dir: str = "data", results_dir: str = "results"):
     print(f"✓ Detailed predictions saved to {predictions_file}")
     
     # ROC curve data
-    roc_data = plot_roc_curves(y_true, scores_ae, scores_if)
+    roc_data = plot_roc_curves(y_test, scores_ae, scores_if)
     roc_file = results_path / "roc_data.json"
     
     roc_data_serializable = {
@@ -388,10 +358,14 @@ def main(data_dir: str = "data", results_dir: str = "results"):
     print("=" * 80)
     print(f"Autoencoder F1 Score: {metrics_ae['f1']:.4f}")
     print(f"Isolation Forest F1 Score: {metrics_if['f1']:.4f}")
-    print(f"Winner: {'Autoencoder' if metrics_ae['f1'] > metrics_if['f1'] else 'Isolation Forest'}")
-    print("\nAutoencoder ROC AUC: {:.4f}".format(metrics_ae['roc_auc']))
-    print("Isolation Forest ROC AUC: {:.4f}".format(metrics_if['roc_auc']))
-    print("=" * 80)
+    winner = "Autoencoder" if metrics_ae['f1'] > metrics_if['f1'] else "Isolation Forest"
+    print(f"Winner: {winner}")
+    print(f"\nAutoencoder ROC AUC: {metrics_ae['roc_auc']:.4f}")
+    print(f"Isolation Forest ROC AUC: {metrics_if['roc_auc']:.4f}")
+    print("\n" + "=" * 80)
+    print("NOTE: All metrics are computed on REAL student outcome data")
+    print("See LABELING_STRATEGY.md for detailed approach documentation")
+    print("=" * 80 + "\n")
 
 
 if __name__ == "__main__":
