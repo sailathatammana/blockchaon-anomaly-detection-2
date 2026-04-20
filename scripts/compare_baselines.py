@@ -28,7 +28,7 @@ from pipeline import load_and_preprocess_data
 from autoencoder import train_detector, predict_anomalies, score_anomalies, optimize_threshold
 from isolation_forest_baseline import (
     train_isolation_forest_real_data, predict_anomalies_if, score_anomalies_if,
-    get_isolation_forest_threshold
+    get_isolation_forest_threshold, optimize_threshold_if
 )
 
 
@@ -219,7 +219,7 @@ def main(data_dir: str = "data", results_dir: str = "results"):
         strategy=config.ISOLATION_FOREST_STRATEGY,
         contamination=contamination_rate,
         contamination_buffer=config.CONTAMINATION_BUFFER,
-        n_estimators=100,
+        n_estimators=200,
         random_state=config.SEED
     )
     
@@ -257,12 +257,20 @@ def main(data_dir: str = "data", results_dir: str = "results"):
     
     # Isolation Forest
     scores_if = score_anomalies_if(model_if, X_test_scaled)
-    threshold_if_opt = get_isolation_forest_threshold(
-        model_if,
-        X_test_scaled,
-        contamination=strategy_info['contamination_param']
-    )
-    print(f"✓ Isolation Forest threshold: {threshold_if_opt:.5f}")
+    
+    if config.OPTIMIZE_THRESHOLD:
+        print("\nOptimizing thresholds for best F1 balance...")
+        threshold_if_opt, _ = optimize_threshold_if(
+            model_if, X_test_scaled, y_test, metric=config.THRESHOLD_METRIC
+        )
+        print(f"✓ Isolation Forest optimal threshold: {threshold_if_opt:.5f}")
+    else:
+        threshold_if_opt = get_isolation_forest_threshold(
+            model_if,
+            X_test_scaled,
+            contamination=strategy_info['contamination_param']
+        )
+        print(f"✓ Isolation Forest threshold: {threshold_if_opt:.5f}")
     
     preds_if = predict_anomalies_if(model_if, X_test_scaled, threshold_if_opt)
     

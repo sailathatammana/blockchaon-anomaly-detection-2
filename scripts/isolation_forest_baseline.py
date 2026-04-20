@@ -17,6 +17,7 @@ See LABELING_STRATEGY.md for detailed comparison.
 """
 import numpy as np
 from sklearn.ensemble import IsolationForest
+from sklearn.metrics import f1_score, precision_score, recall_score
 from typing import Tuple, Optional
 
 
@@ -27,6 +28,7 @@ def train_isolation_forest_real_data(
     contamination: float = 0.02,
     contamination_buffer: float = 0.05,
     n_estimators: int = 100,
+    max_samples: str = "auto",
     random_state: int = 41
 ) -> Tuple[IsolationForest, dict]:
     """Train Isolation Forest for real anomaly detection.
@@ -43,6 +45,7 @@ def train_isolation_forest_real_data(
                       Only used for strategy="all_data"
         contamination_buffer: Buffer to add for "informed" strategy
         n_estimators: Number of isolation trees
+        max_samples: Number of samples to draw for each tree ("auto" or int)
         random_state: Seed for reproducibility
     
     Returns:
@@ -109,6 +112,7 @@ def train_isolation_forest_real_data(
     model = IsolationForest(
         contamination=contam_param,
         n_estimators=n_estimators,
+        max_samples=max_samples,
         random_state=random_state,
         n_jobs=-1,  # Use all available processors
         verbose=0
@@ -234,52 +238,58 @@ def get_isolation_forest_threshold(
     return threshold
 
 
-def predict_anomalies_if(model: IsolationForest,
-    X: np.ndarray,
-    threshold: float = None
-) -> np.ndarray:
-    """Predict anomalies using Isolation Forest.
-    
-    Args:
-        model: Trained IsolationForest model
-        X: Data to predict (shape: n_samples × n_features)
-        threshold: Optional custom anomaly threshold
-                  If None, uses model's default decision boundary
-    
-    Returns:
-        Predictions array:
-        - 1 for normal samples
-        - -1 for anomalies
-    """
-    if threshold is None:
-        # Use model's built-in threshold (based on contamination)
-        predictions = model.predict(X)
-    else:
-        # Use custom threshold on anomaly scores
-        scores = score_anomalies_if(model, X)
-        predictions = np.where(scores > threshold, -1, 1)
-    
-    return predictions
-
-
-def get_isolation_forest_threshold(
+def optimize_threshold_if(
     model: IsolationForest,
     X: np.ndarray,
-    contamination: float = 0.02
-) -> float:
-    """Get the anomaly threshold for Isolation Forest predictions.
+    y: np.ndarray,
+    metric: str = "f1"
+) -> Tuple[float, dict]:
+    """Optimize anomaly threshold for Isolation Forest using validation labels.
+    
+    Searches for the best threshold that maximizes the chosen metric.
     
     Args:
         model: Trained IsolationForest model
-        X: Data to compute threshold on
-        contamination: Contamination parameter (fraction of anomalies)
+        X: Validation/test data (shape: n_samples × n_features)
+        y: True labels (1=normal, -1=abnormal)
+        metric: Metric to optimize ("f1", "precision", or "recall")
     
     Returns:
-        Threshold value for anomaly scores
+        Tuple of:
+            - best_threshold: Optimal threshold value
+            - details: Dictionary with optimization details
     """
     scores = score_anomalies_if(model, X)
-    # Use quantile corresponding to contamination
-    q = max(0.0, min(1.0, 1.0 - contamination))
-    threshold = float(np.quantile(scores, q))
     
-    return threshold
+    # Try thresholds from 1st to 99th percentile
+    percentiles = np.linspace(1, 99, 99)
+    thresholds = np.percentile(scores, percentiles)
+    
+    best_score = -np.inf
+    best_threshold = thresholds[0]
+    details = {}
+    
+    for threshold in thresholds:
+        # Convert predictions to match y format: 1=normal, -1=anomaly
+        preds = np.where(scores > threshold, -1, 1)
+        
+        # Compute metric
+        if metric == "f1":
+            score = f1_score(y, preds, pos_label=-1, zero_division=0)
+        elif metric == "precision":
+            score = precision_score(y, preds, pos_label=-1, zero_division=0)
+        elif metric == "recall":
+            score = recall_score(y, preds, pos_label=-1, zero_division=0)
+        else:
+            raise ValueError(f"Unknown metric: {metric}")
+        
+        if score > best_score:
+            best_score = score
+            best_threshold = threshold
+    
+    details["metric"] = metric
+    details["best_score"] = float(best_score)
+    details["threshold_range"] = (float(thresholds.min()), float(thresholds.max()))
+    
+    return best_threshold, details
+
