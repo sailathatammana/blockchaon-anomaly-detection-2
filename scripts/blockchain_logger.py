@@ -230,13 +230,14 @@ class PermissionedBlockchain:
         self,
         index: int,
         details: Dict[str, Any],
+        student_id: str = None,
     ) -> None:
         """Log an anomaly detection to the immutable blockchain.
         
         Writes a new entry to ledger containing:
         - timestamp: When detected
         - user: Who logged it (detector username)
-        - data: Index and anomaly details
+        - data: Index, student_id (if provided), and anomaly details
         - prev_hash: Hash of previous entry (chain link)
         - hash: SHA256 of this entry
         - signature: HMAC-SHA256 proof of integrity
@@ -248,6 +249,7 @@ class PermissionedBlockchain:
             user_role: "detector",
             data: {
                 index: 42,
+                student_id: "11391",
                 details: {anomaly_score, confidence, ...}
             },
             prev_hash: "abc...",
@@ -258,6 +260,7 @@ class PermissionedBlockchain:
         Args:
             index: Sample index that's anomalous
             details: Dict with anomaly info (anomaly_score, confidence, etc.)
+            student_id: Optional student ID for the anomalous record
         
         Raises:
             PermissionError: If not logged in or no write permission
@@ -291,6 +294,7 @@ class PermissionedBlockchain:
             # Anomaly information
             "data": {
                 "index": index,  # Which sample is anomalous
+                "student_id": student_id,  # Student ID (if provided)
                 "details": details,  # Anomaly score, confidence, etc.
             },
             # Hash chain: link to previous entry
@@ -421,6 +425,7 @@ _blockchain_instance = None
 def log_anomaly(
     index: int,
     details: Dict[str, Any],
+    student_id: str = None,
     ledger_path: str = "blockchain_ledger.jsonl",
     username: str = "detector",
     password: str = "detector_password",
@@ -435,6 +440,7 @@ def log_anomaly(
     Args:
         index: Anomalous sample index
         details: Anomaly details dict
+        student_id: Optional student ID for the anomalous record
         ledger_path: Path to blockchain ledger file
         username: Username for authentication
         password: Password for authentication
@@ -457,4 +463,4 @@ def log_anomaly(
         _blockchain_instance.login(username, password)
     
     # Log the anomaly
-    _blockchain_instance.log_anomaly(index, details)
+    _blockchain_instance.log_anomaly(index, details, student_id=student_id)

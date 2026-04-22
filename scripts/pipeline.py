@@ -188,7 +188,7 @@ def load_and_preprocess_data(data_dir: str = "data", results_dir: str = "results
         print(f"  Test set shape:       {X_test_scaled.shape}")
         print(f"  Scaler fit on:        {len(X_train)} normal training samples")
         
-        return X_train_scaled, X_test_scaled, y_train, y_test, feature_names, scaler, label_info
+        return X_train_scaled, X_test_scaled, y_train, y_test, feature_names, scaler, label_info, profiles_labeled, test_idx
             
     except Exception as e:
         print("\n" + "█" * 70)
@@ -197,11 +197,11 @@ def load_and_preprocess_data(data_dir: str = "data", results_dir: str = "results
         print(f"\nError: {e}")
         import traceback
         traceback.print_exc()
-        return None, None, None, None, None, None, None
+        return None, None, None, None, None, None, None, None, None
 
 
 def train_and_evaluate_model(X_train_scaled, X_test_scaled, y_train, y_test, 
-                            feature_names, scaler, label_info) -> None:
+                            feature_names, scaler, label_info, profiles_labeled=None, test_idx=None) -> None:
     """Train autoencoder on normal data and evaluate on real normal + abnormal mix.
     
     REAL DATA EVALUATION:
@@ -326,11 +326,17 @@ def train_and_evaluate_model(X_train_scaled, X_test_scaled, y_train, y_test,
     # Log each detected anomaly
     anomaly_indices = [int(i) for i, p in enumerate(test_preds) if p == -1]
     for idx in anomaly_indices:
+        # Map test index to student ID if profiles available
+        student_id = None
+        if profiles_labeled is not None and test_idx is not None and idx < len(test_idx):
+            original_idx = test_idx[idx]
+            student_id = str(profiles_labeled.loc[original_idx, 'id_student'])
+        
         blockchain.log_anomaly(idx, {
             "score": float(test_scores[idx]),
             "true_label": int(y_test[idx]),
             "is_correct": bool((y_test[idx] == -1) and (test_preds[idx] == -1))
-        })
+        }, student_id=student_id)
     
     print(f"✓ Logged {len(anomaly_indices)} anomalies to blockchain")
     
@@ -403,13 +409,13 @@ def main():
     print("█" * 70)
     
     # Load and preprocess data with real labeling
-    X_train_scaled, X_test_scaled, y_train, y_test, feature_names, scaler, label_info = \
-        load_and_preprocess_data(data_dir="data", results_dir="results")
+    result = load_and_preprocess_data(data_dir="data", results_dir="results")
+    X_train_scaled, X_test_scaled, y_train, y_test, feature_names, scaler, label_info, profiles_labeled, test_idx = result
     
     # Train and evaluate model
     if X_train_scaled is not None:
         train_and_evaluate_model(X_train_scaled, X_test_scaled, y_train, y_test, 
-                               feature_names, scaler, label_info)
+                               feature_names, scaler, label_info, profiles_labeled, test_idx)
 
 
 if __name__ == "__main__":
