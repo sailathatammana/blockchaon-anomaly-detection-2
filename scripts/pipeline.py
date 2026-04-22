@@ -90,6 +90,9 @@ def load_and_preprocess_data(data_dir: str = "data", results_dir: str = "results
         profiles.to_csv(results_path / "student_profiles.csv", index=False)
         print(f"✓ Profiles saved")
         
+        # Extract student IDs before preparing for autoencoder
+        student_ids = profiles['id_student'].values if 'id_student' in profiles.columns else None
+        
         # Prepare features for autoencoder
         X, feature_names = preprocessor.prepare_for_autoencoder(profiles)
         print(f"\n✓ Features prepared for autoencoder")
@@ -106,9 +109,15 @@ def load_and_preprocess_data(data_dir: str = "data", results_dir: str = "results
         print("█ STEP 3: TRAIN/TEST SPLIT")
         print("█" * 70)
         
-        X_train, X_test = train_test_split(
-            X, test_size=config.TEST_SIZE, random_state=config.SEED
-        )
+        if student_ids is not None:
+            X_train, X_test, train_ids, test_ids = train_test_split(
+                X, student_ids, test_size=config.TEST_SIZE, random_state=config.SEED
+            )
+        else:
+            X_train, X_test = train_test_split(
+                X, test_size=config.TEST_SIZE, random_state=config.SEED
+            )
+            test_ids = None
         
         print(f"\n✓ Data split completed ({(1-config.TEST_SIZE)*100:.0f}/{config.TEST_SIZE*100:.0f})")
         print(f"  Training set:   {X_train.shape[0]} samples ({X_train.shape[0]/len(X)*100:.1f}%)")
@@ -126,7 +135,7 @@ def load_and_preprocess_data(data_dir: str = "data", results_dir: str = "results
         print(f"  Training set shape:   {X_train_scaled.shape}")
         print(f"  Test set shape:       {X_test_scaled.shape}")
         
-        return X_train_scaled, X_test_scaled, feature_names, scaler
+        return X_train_scaled, X_test_scaled, feature_names, scaler, test_ids
             
     except Exception as e:
         print("\n" + "█" * 70)
@@ -135,10 +144,10 @@ def load_and_preprocess_data(data_dir: str = "data", results_dir: str = "results
         print(f"\nError: {e}")
         import traceback
         traceback.print_exc()
-        return None, None, None, None
+        return None, None, None, None, None
 
 
-def train_and_evaluate_model(X_train_scaled, X_test_scaled, feature_names, scaler) -> None:
+def train_and_evaluate_model(X_train_scaled, X_test_scaled, feature_names, scaler, test_ids=None) -> None:
     """Train autoencoder, inject anomalies, evaluate performance, and blockchain logging.
     
     Args:
@@ -256,7 +265,8 @@ def train_and_evaluate_model(X_train_scaled, X_test_scaled, feature_names, scale
     # Log each detected anomaly
     anomaly_indices = [int(i) for i, p in enumerate(test_preds) if p == -1]
     for idx in anomaly_indices:
-        blockchain.log_anomaly(idx, {"score": float(test_scores[idx])})
+        student_id = int(test_ids[idx]) if test_ids is not None else None
+        blockchain.log_anomaly(idx, {"score": float(test_scores[idx])}, student_id=student_id)
     
     print(f"✓ Logged {len(anomaly_indices)} anomalies to blockchain")
     
@@ -310,13 +320,13 @@ def main():
     print("█" * 70)
     
     # Load and preprocess data
-    X_train_scaled, X_test_scaled, feature_names, scaler = load_and_preprocess_data(
+    X_train_scaled, X_test_scaled, feature_names, scaler, test_ids = load_and_preprocess_data(
         data_dir="data",
         results_dir="results"
     )
     
     # Train and evaluate model
-    train_and_evaluate_model(X_train_scaled, X_test_scaled, feature_names, scaler)
+    train_and_evaluate_model(X_train_scaled, X_test_scaled, feature_names, scaler, test_ids)
 
 
 if __name__ == "__main__":
