@@ -281,7 +281,7 @@ def main(data_dir: str = "data", results_dir: str = "results"):
     scores_ae = score_anomalies(model_ae, X_test_scaled)
     
     if config.OPTIMIZE_THRESHOLD:
-        print("\nOptimizing thresholds for best F1 balance...")
+        print("\nOptimizing Autoencoder thresholds for best F1 balance...")
         threshold_ae_opt, _ = optimize_threshold(
             model_ae, X_test_scaled, y_test, metric=config.THRESHOLD_METRIC
         )
@@ -296,7 +296,7 @@ def main(data_dir: str = "data", results_dir: str = "results"):
     scores_vae = score_anomalies_vae(model_vae, X_test_scaled)
 
     if config.OPTIMIZE_THRESHOLD:
-        print("\nOptimizing thresholds for best F1 balance...")
+        print("\nOptimizing VAE thresholds for best F1 balance...")
         threshold_vae_opt, _ = optimize_threshold_vae(
             model_vae, X_test_scaled, y_test, metric=config.THRESHOLD_METRIC
         )
@@ -310,7 +310,7 @@ def main(data_dir: str = "data", results_dir: str = "results"):
     scores_if = score_anomalies_if(model_if, X_test_scaled)
     
     if config.OPTIMIZE_THRESHOLD:
-        print("\nOptimizing thresholds for best F1 balance...")
+        print("\nOptimizing Isolation Forest thresholds for best F1 balance...")
         threshold_if_opt, _ = optimize_threshold_if(
             model_if, X_test_scaled, y_test, metric=config.THRESHOLD_METRIC
         )
