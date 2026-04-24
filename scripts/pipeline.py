@@ -333,9 +333,7 @@ def train_and_evaluate_model(X_train_scaled, X_test_scaled, y_train, y_test,
             student_id = str(profiles_labeled.loc[original_idx, 'id_student'])
         
         blockchain.log_anomaly(idx, {
-            "score": float(test_scores[idx]),
-            "true_label": int(y_test[idx]),
-            "is_correct": bool((y_test[idx] == -1) and (test_preds[idx] == -1))
+            "score": float(test_scores[idx])
         }, student_id=student_id)
     
     print(f"✓ Logged {len(anomaly_indices)} anomalies to blockchain")
