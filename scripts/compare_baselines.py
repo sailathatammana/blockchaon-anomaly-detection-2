@@ -223,7 +223,7 @@ def main(data_dir: str = "data", results_dir: str = "results"):
     print("STEP 1: EXTRACTING DATA FROM PIPELINE")
     print("=" * 80)
     
-    X_train_scaled, X_test_scaled, feature_names, scaler = load_and_preprocess_data(
+    X_train_scaled, X_test_scaled, feature_names, scaler, _ = load_and_preprocess_data(
         data_dir=data_dir,
         results_dir=results_dir
     )
