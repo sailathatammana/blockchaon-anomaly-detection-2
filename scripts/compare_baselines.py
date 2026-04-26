@@ -16,6 +16,8 @@ from sklearn.metrics import (
     accuracy_score, f1_score, precision_score, recall_score,
     confusion_matrix, roc_auc_score, roc_curve, auc
 )
+from sklearn.decomposition import PCA
+import matplotlib.pyplot as plt
 
 # Import our modules
 import config
@@ -202,6 +204,44 @@ def plot_roc_curves(y_true, scores_ae, scores_if, scores_vae, save_path="results
         "tpr_vae": tpr_vae,
         "roc_auc_vae": roc_auc_vae,
     }
+
+
+def plot_pca_overview(X_test, y_true, save_path="results/pca_anomalies_overview.png"):
+    """Plot a 2D PCA representation of the normal data vs injected anomalies.
+    
+    Args:
+        X_test: Test set features
+        y_true: True labels (1 for normal, -1 for anomaly)
+        save_path: Path to save the plot image
+    """
+    pca = PCA(n_components=2, random_state=config.SEED)
+    X_pca = pca.fit_transform(X_test)
+    
+    normal_idx = np.where(y_true == 1)[0]
+    anomaly_idx = np.where(y_true == -1)[0]
+    
+    plt.figure(figsize=(10, 8))
+    
+    # Plot normal points
+    plt.scatter(
+        X_pca[normal_idx, 0], X_pca[normal_idx, 1],
+        c='blue', alpha=0.3, label='Normal (True)', s=20
+    )
+    
+    # Plot injected anomalies
+    plt.scatter(
+        X_pca[anomaly_idx, 0], X_pca[anomaly_idx, 1],
+        c='red', alpha=0.7, label='Injected Anomalies', s=30, marker='x'
+    )
+    
+    plt.title('2D PCA Overview of Test Set (Normal vs Injected Anomalies)')
+    plt.xlabel(f'First Principal Component (Var: {pca.explained_variance_ratio_[0]*100:.1f}%)')
+    plt.ylabel(f'Second Principal Component (Var: {pca.explained_variance_ratio_[1]*100:.1f}%)')
+    plt.legend()
+    plt.grid(alpha=0.3)
+    
+    plt.savefig(save_path, dpi=300, bbox_inches='tight')
+    plt.close()
 
 
 def main(data_dir: str = "data", results_dir: str = "results"):
@@ -436,6 +476,11 @@ def main(data_dir: str = "data", results_dir: str = "results"):
         json.dump(roc_data_serializable, f, indent=2)
     
     print(f"✓ ROC data saved to {roc_file}")
+    
+    # Generate PCA visualization of anomalies
+    pca_file = results_path / "pca_anomalies_overview.png"
+    plot_pca_overview(X_test_corrupted, y_true, pca_file)
+    print(f"✓ PCA overview plot saved to {pca_file}")
     
     # Summary
     print("\n" + "=" * 80)
