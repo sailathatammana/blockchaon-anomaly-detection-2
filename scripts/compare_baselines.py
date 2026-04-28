@@ -193,7 +193,7 @@ def main(data_dir: str = "data", results_dir: str = "results"):
     print("STEP 1: LOADING DATA WITH REAL ANOMALY LABELS")
     print("=" * 80)
     
-    X_train_scaled, X_test_scaled, y_train, y_test, feature_names, scaler, label_info = \
+    X_train_scaled, X_test_scaled, y_train, y_test, feature_names, scaler, label_info, profiles_labeled, test_idx = \
         load_and_preprocess_data(data_dir=data_dir, results_dir=results_dir)
     
     if X_train_scaled is None:
