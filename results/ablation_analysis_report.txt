@@ -1,0 +1,108 @@
+================================================================================
+ABLATION STUDY ANALYSIS REPORT
+================================================================================
+Timestamp: 2026-04-30T13:03:23.526722
+
+DATA SUMMARY
+--------------------------------------------------------------------------------
+  Total features: 34
+  Training samples: 11538 (normal only)
+  Validation samples: N/A (normal only)
+  Test samples: 21055
+  Abnormal test samples: 17208
+
+BASELINE PERFORMANCE
+--------------------------------------------------------------------------------
+  Configuration:
+    bottleneck_dim: 4
+    depth: 3
+    dropout_rate: 0.1
+    activation: relu
+    batch_size: 16
+    epochs: 80
+    feature_subset: 1.0
+
+  Metrics:
+    F1 Score:  0.9419
+    ROC-AUC:   0.9438
+    Accuracy:  0.9031
+    Precision: 0.9237
+    Recall:    0.9607
+    Specificity: 0.9607
+
+COMPONENT IMPACT ANALYSIS
+--------------------------------------------------------------------------------
+
+BOTTLENECK DIMENSION
+  ----------------------------------------------------------------------------
+  bottleneck_32                  F1=0.9636 (+2.31%) ROC-AUC=0.9781
+  bottleneck_16                  F1=0.9580 (+1.72%) ROC-AUC=0.9692
+  bottleneck_8                   F1=0.9527 (+1.15%) ROC-AUC=0.9579
+  bottleneck_4                   F1=0.9419 (+0.00%) ROC-AUC=0.9438
+  bottleneck_2                   F1=0.9299 (-1.27%) ROC-AUC=0.9324
+  ✓ Best: bottleneck_32                  F1=0.9636 (+2.31%)
+
+NETWORK DEPTH
+  ----------------------------------------------------------------------------
+  depth_2                        F1=0.9512 (+0.99%) ROC-AUC=0.9565
+  depth_4                        F1=0.9482 (+0.67%) ROC-AUC=0.9555
+  depth_3                        F1=0.9419 (+0.00%) ROC-AUC=0.9438
+  depth_1                        F1=0.9390 (-0.30%) ROC-AUC=0.9456
+  ✓ Best: depth_2                        F1=0.9512 (+0.99%)
+
+DROPOUT RATE
+  ----------------------------------------------------------------------------
+  dropout_0.0                    F1=0.9561 (+1.51%) ROC-AUC=0.9704
+  dropout_0.1                    F1=0.9419 (+0.00%) ROC-AUC=0.9438
+  dropout_0.2                    F1=0.9394 (-0.26%) ROC-AUC=0.9403
+  dropout_0.3                    F1=0.9342 (-0.81%) ROC-AUC=0.9314
+  ✓ Best: dropout_0.0                    F1=0.9561 (+1.51%)
+
+ACTIVATION FUNCTION
+  ----------------------------------------------------------------------------
+  activation_relu                F1=0.9419 (+0.00%) ROC-AUC=0.9438
+  activation_tanh                F1=0.9380 (-0.41%) ROC-AUC=0.9359
+  activation_sigmoid             F1=0.9346 (-0.77%) ROC-AUC=0.9290
+  ✓ Best: activation_relu                F1=0.9419 (+0.00%)
+
+FEATURE SUBSET
+  ----------------------------------------------------------------------------
+  features_25pct                 F1=0.9521 (+1.08%) ROC-AUC=0.7062
+  features_100pct                F1=0.9441 (+0.24%) ROC-AUC=0.9491
+  features_50pct                 F1=0.9045 (-3.97%) ROC-AUC=0.7180
+  ✓ Best: features_25pct                 F1=0.9521 (+1.08%)
+
+
+================================================================================
+KEY FINDINGS & RECOMMENDATIONS
+================================================================================
+
+Best Overall Configuration:
+  Variant: bottleneck_32
+  Category: bottleneck_dimension
+  bottleneck_dim: 32
+  depth: 3
+  dropout_rate: 0.1
+  activation: relu
+  batch_size: nan
+  epochs: nan
+  feature_subset: nan
+  n_features_used: nan
+  feature_subset_pct: nan
+  F1 Score: 0.9636
+  ROC-AUC: 0.9781
+  Improvement over baseline: +2.31%
+
+Component Sensitivity Ranking (by max F1 improvement):
+  bottleneck_dimension      +2.31%
+  network_depth             +0.99%
+  dropout_rate              +1.51%
+  activation_function       +0.00%
+  feature_subset            +1.08%
+
+
+Recommendations:
+  1. Consider configurations that significantly improve F1 (>2% improvement)
+  2. Balance F1, Precision, and Recall based on use case requirements
+  3. Monitor for overfitting when using reduced feature sets
+  4. Test recommended configurations on hold-out test set before deployment
