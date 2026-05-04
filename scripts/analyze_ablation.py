@@ -222,9 +222,11 @@ def generate_analysis_report(results: Dict[str, Any], df: pd.DataFrame,
     data_summary = results.get("data_summary", {})
     report.append(f"  Total features: {data_summary.get('n_features', 'N/A')}")
     report.append(f"  Training samples: {data_summary.get('n_train', 'N/A')} (normal only)")
-    report.append(f"  Validation samples: {data_summary.get('n_val', 'N/A')} (normal only)")
-    report.append(f"  Test samples: {data_summary.get('n_test', 'N/A')}")
-    report.append(f"  Abnormal test samples: {data_summary.get('n_abnormal', 'N/A')}\n")
+    report.append(f"  Threshold-tuning samples: {data_summary.get('n_threshold_tune', data_summary.get('n_val', 'N/A'))}")
+    report.append(f"  Abnormal threshold-tuning samples: {data_summary.get('n_threshold_tune_abnormal', 'N/A')}")
+    report.append(f"  Holdout evaluation samples: {data_summary.get('n_eval', data_summary.get('n_test', 'N/A'))}")
+    report.append(f"  Abnormal holdout samples: {data_summary.get('n_eval_abnormal', data_summary.get('n_abnormal', 'N/A'))}\n")
+
     
     # Baseline Performance
     report.append("BASELINE PERFORMANCE")

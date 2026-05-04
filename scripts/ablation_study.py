@@ -10,7 +10,12 @@ Components tested:
 3. Dropout rate: Regularization strength (0.0, 0.1, 0.2, 0.3)
 4. Activation function: Non-linearity type (relu, sigmoid, tanh)
 5. Feature subset: Percentage of features by variance (100%, 50%, 25%)
-6. Hyperparameters: Batch size & epochs combinations
+6. Batch size: Training mini-batch size (8, 16, 32)
+7. Epoch budget: Maximum training epochs (40, 80, 120)
+
+Threshold policy:
+- Tune threshold on a dedicated validation split
+- Report final metrics on a separate holdout split
 
 Baseline configuration:
 - Bottleneck: 4
@@ -22,13 +27,12 @@ Baseline configuration:
 """
 
 import os
-import sys
 import json
 import random
 import numpy as np
 import pandas as pd
 from pathlib import Path
-from typing import Tuple, List, Dict, Any
+from typing import Dict, Any
 from datetime import datetime
 
 # Set seeds FIRST
@@ -39,10 +43,10 @@ os.environ["TF_DETERMINISTIC_OPS"] = "1"
 import tensorflow as tf
 from tensorflow import keras
 from tensorflow.keras import layers
-from sklearn.preprocessing import StandardScaler
+from sklearn.model_selection import train_test_split
 from sklearn.metrics import (
     accuracy_score, f1_score, precision_score, recall_score,
-    confusion_matrix, roc_auc_score, roc_curve
+    confusion_matrix, roc_auc_score
 )
 
 # Set seeds after imports
@@ -121,6 +125,8 @@ def build_autoencoder_variable_depth(
 
 def train_variant(
     X_train: np.ndarray,
+    X_threshold: np.ndarray,
+    y_threshold: np.ndarray,
     X_test: np.ndarray,
     y_test: np.ndarray,
     bottleneck_dim: int = 4,
@@ -129,20 +135,24 @@ def train_variant(
     activation: str = "relu",
     batch_size: int = 16,
     epochs: int = 80,
+    threshold_metric: str = "f1",
     random_state: int = 41,
 ) -> Dict[str, Any]:
     """Train a variant and evaluate it.
     
     Args:
         X_train: Training data (normal samples only)
-        X_test: Test data (normal + abnormal)
-        y_test: Test labels (1=normal, -1=abnormal)
+        X_threshold: Threshold-tuning split (normal + abnormal)
+        y_threshold: Labels for threshold-tuning split
+        X_test: Holdout test split (normal + abnormal)
+        y_test: Labels for holdout test split (1=normal, -1=abnormal)
         bottleneck_dim: Compression dimension
         depth: Network depth
         dropout_rate: Dropout probability
         activation: Activation function
         batch_size: Batch size for training
         epochs: Maximum epochs
+        threshold_metric: Metric used to optimize threshold on threshold split
     
     Returns:
         Dictionary with metrics and configuration
@@ -181,37 +191,38 @@ def train_variant(
         verbose=0
     )
     
-    # Find initial threshold using training data
-    X_train_recon = model.predict(X_train, verbose=0)
-    train_errors = np.mean((X_train - X_train_recon) ** 2, axis=1)
-    
-    # Initial threshold: mean + 2*std (works better with contamination=0.0)
-    threshold_initial = float(train_errors.mean() + 2.0 * train_errors.std())
-    
-    # Optimize threshold on test set using same method as original pipeline
+    # Optimize threshold on dedicated threshold-tuning split
+    threshold, threshold_score = optimize_threshold(
+        model, X_threshold, y_threshold, metric=threshold_metric
+    )
+
+    # Evaluate only on holdout test split
     X_test_recon = model.predict(X_test, verbose=0)
     test_errors = np.mean((X_test - X_test_recon) ** 2, axis=1)
-
-    # Use the same optimize_threshold function from autoencoder module
-    optimal_threshold, _ = optimize_threshold(
-        model, X_test, y_test, metric="f1"
-    )
-    threshold = optimal_threshold
     
     # Final predictions with optimized threshold
     predictions = np.where(test_errors > threshold, -1, 1)
     
     # Compute metrics
+    y_test_binary = (y_test == -1).astype(int)
+    if len(np.unique(y_test_binary)) > 1:
+        roc_auc = float(roc_auc_score(y_test_binary, test_errors))
+    else:
+        roc_auc = 0.5
+
     metrics = {
         "accuracy": float(accuracy_score(y_test, predictions)),
-        "f1": float(f1_score(y_test, predictions, pos_label=-1)),
-        "precision": float(precision_score(y_test, predictions, pos_label=-1)),
-        "recall": float(recall_score(y_test, predictions, pos_label=-1)),
-        "roc_auc": float(roc_auc_score(y_test, -test_errors)),  # Higher error = anomaly
+        "f1": float(f1_score(y_test, predictions, pos_label=-1, zero_division=0)),
+        "precision": float(precision_score(y_test, predictions, pos_label=-1, zero_division=0)),
+        "recall": float(recall_score(y_test, predictions, pos_label=-1, zero_division=0)),
+        "roc_auc": roc_auc,
+        "threshold": float(threshold),
+        "threshold_metric": threshold_metric,
+        "threshold_metric_score": float(threshold_score),
     }
     
     # Confusion matrix
-    tn, fp, fn, tp = confusion_matrix(y_test, predictions).ravel()
+    tn, fp, fn, tp = confusion_matrix(y_test, predictions, labels=[1, -1]).ravel()
     metrics.update({
         "tp": int(tp),
         "fp": int(fp),
@@ -254,7 +265,7 @@ def run_ablation_study(
     print("█" * 80)
     
     # ==================== LOAD & PREPROCESS DATA ====================
-    print("\n[1/7] Loading and preprocessing data...")
+    print("\n[1/10] Loading and preprocessing data...")
     
     data_path = Path(data_dir)
     loader = EducationalDataLoader(data_dir=str(data_path))
@@ -267,7 +278,7 @@ def run_ablation_study(
     profiles = preprocessor.create_student_profiles(merged_df)
     
     # Create labels from real outcomes
-    y, label_info = preprocessor.create_anomaly_labels(
+    y, _ = preprocessor.create_anomaly_labels(
         profiles,
         normal_labels=config.NORMAL_OUTCOME_LABELS,
         abnormal_labels=config.ABNORMAL_OUTCOME_LABELS
@@ -277,7 +288,7 @@ def run_ablation_study(
     X, feature_names = preprocessor.prepare_for_autoencoder(profiles)
     
     # Split data using EXACT same method as original pipeline
-    X_train, X_test, y_train, y_test, _, _ = preprocessor.split_normal_abnormal(
+    X_train, X_test, _, y_test, _, _ = preprocessor.split_normal_abnormal(
         X, y,
         normal_train_fraction=config.NORMAL_TRAIN_FRACTION,
         random_state=config.SEED
@@ -299,11 +310,44 @@ def run_ablation_study(
     print(f"  ✓ Test samples: {len(X_test)} ({np.sum(y_test==1)} normal, {np.sum(y_test==-1)} abnormal)")
     print(f"  ✓ Features: {X_train.shape[1]}")
     
+    # Dedicated split for threshold tuning vs final evaluation
+    print("\n[2/10] Splitting threshold-tuning and holdout evaluation sets...")
+    threshold_tune_fraction = 0.30
+    unique_labels, label_counts = np.unique(y_test, return_counts=True)
+    can_stratify = len(unique_labels) > 1 and np.all(label_counts >= 2)
+
+    try:
+        X_threshold, X_eval, y_threshold, y_eval = train_test_split(
+            X_test,
+            y_test,
+            test_size=1.0 - threshold_tune_fraction,
+            random_state=config.SEED,
+            stratify=y_test if can_stratify else None
+        )
+    except ValueError:
+        # Fallback when stratified split is not feasible with small class counts
+        X_threshold, X_eval, y_threshold, y_eval = train_test_split(
+            X_test,
+            y_test,
+            test_size=1.0 - threshold_tune_fraction,
+            random_state=config.SEED,
+            stratify=None
+        )
+
+    print(
+        f"  [OK] Threshold-tuning set: {len(X_threshold)} "
+        f"({np.sum(y_threshold==1)} normal, {np.sum(y_threshold==-1)} abnormal)"
+    )
+    print(
+        f"  [OK] Holdout evaluation set: {len(X_eval)} "
+        f"({np.sum(y_eval==1)} normal, {np.sum(y_eval==-1)} abnormal)"
+    )
+
     # ==================== BASELINE ====================
-    print("\n[2/7] Training baseline model (bottleneck=4, depth=3, dropout=0.1, relu)...")
+    print("\n[3/10] Training baseline model (bottleneck=4, depth=3, dropout=0.1, relu)...")
     
     baseline_results = train_variant(
-        X_train, X_test, y_test,
+        X_train, X_threshold, y_threshold, X_eval, y_eval,
         bottleneck_dim=4,
         depth=3,
         dropout_rate=0.1,
@@ -329,19 +373,26 @@ def run_ablation_study(
         "data_summary": {
             "n_features": int(X_train.shape[1]),
             "n_train": int(len(X_train)),
-            "n_test": int(len(X_test)),
-            "n_abnormal": int(np.sum(y_test == -1)),
-        }
+            "n_threshold_tune": int(len(X_threshold)),
+            "n_threshold_tune_abnormal": int(np.sum(y_threshold == -1)),
+            "n_eval": int(len(X_eval)),
+            "n_eval_abnormal": int(np.sum(y_eval == -1)),
+        },
+        "study_config": {
+            "threshold_tune_fraction": threshold_tune_fraction,
+            "threshold_metric": "f1",
+            "random_state": int(config.SEED),
+        },
     }
     
     # ==================== TEST BOTTLENECK DIMENSION ====================
-    print("\n[3/7] Testing bottleneck dimensions [2, 4, 8, 16, 32]...")
+    print("\n[4/10] Testing bottleneck dimensions [2, 4, 8, 16, 32]...")
     
     bottleneck_results = {}
     for bottleneck_dim in [2, 4, 8, 16, 32]:
         print(f"  Testing bottleneck_dim={bottleneck_dim}...", end=" ")
         results = train_variant(
-            X_train, X_test, y_test,
+            X_train, X_threshold, y_threshold, X_eval, y_eval,
             bottleneck_dim=bottleneck_dim,
             depth=3,
             dropout_rate=0.1,
@@ -361,13 +412,13 @@ def run_ablation_study(
     all_results["variations"]["bottleneck_dimension"] = bottleneck_results
     
     # ==================== TEST NETWORK DEPTH ====================
-    print("\n[4/7] Testing network depths [1, 2, 3, 4]...")
+    print("\n[5/10] Testing network depths [1, 2, 3, 4]...")
     
     depth_results = {}
     for depth in [1, 2, 3, 4]:
         print(f"  Testing depth={depth}...", end=" ")
         results = train_variant(
-            X_train, X_test, y_test,
+            X_train, X_threshold, y_threshold, X_eval, y_eval,
             bottleneck_dim=4,
             depth=depth,
             dropout_rate=0.1,
@@ -387,13 +438,13 @@ def run_ablation_study(
     all_results["variations"]["network_depth"] = depth_results
     
     # ==================== TEST DROPOUT RATE ====================
-    print("\n[5/7] Testing dropout rates [0.0, 0.1, 0.2, 0.3]...")
+    print("\n[6/10] Testing dropout rates [0.0, 0.1, 0.2, 0.3]...")
     
     dropout_results = {}
     for dropout_rate in [0.0, 0.1, 0.2, 0.3]:
         print(f"  Testing dropout_rate={dropout_rate}...", end=" ")
         results = train_variant(
-            X_train, X_test, y_test,
+            X_train, X_threshold, y_threshold, X_eval, y_eval,
             bottleneck_dim=4,
             depth=3,
             dropout_rate=dropout_rate,
@@ -413,13 +464,13 @@ def run_ablation_study(
     all_results["variations"]["dropout_rate"] = dropout_results
     
     # ==================== TEST ACTIVATION FUNCTIONS ====================
-    print("\n[6/7] Testing activation functions [relu, sigmoid, tanh]...")
+    print("\n[7/10] Testing activation functions [relu, sigmoid, tanh]...")
     
     activation_results = {}
     for activation in ["relu", "sigmoid", "tanh"]:
         print(f"  Testing activation={activation}...", end=" ")
         results = train_variant(
-            X_train, X_test, y_test,
+            X_train, X_threshold, y_threshold, X_eval, y_eval,
             bottleneck_dim=4,
             depth=3,
             dropout_rate=0.1,
@@ -439,7 +490,7 @@ def run_ablation_study(
     all_results["variations"]["activation_function"] = activation_results
     
     # ==================== TEST FEATURE SUBSETS ====================
-    print("\n[7/7] Testing feature subsets [100%, 50%, 25%]...")
+    print("\n[8/10] Testing feature subsets [100%, 50%, 25%]...")
     
     feature_results = {}
     for pct in [1.0, 0.5, 0.25]:
@@ -451,10 +502,11 @@ def run_ablation_study(
         feature_indices = np.argsort(feature_var)[-n_features:]
         
         X_train_subset = X_train[:, feature_indices]
-        X_test_subset = X_test[:, feature_indices]
+        X_threshold_subset = X_threshold[:, feature_indices]
+        X_eval_subset = X_eval[:, feature_indices]
         
         results = train_variant(
-            X_train_subset, X_test_subset, y_test,
+            X_train_subset, X_threshold_subset, y_threshold, X_eval_subset, y_eval,
             bottleneck_dim=4,
             depth=3,
             dropout_rate=0.1,
@@ -474,6 +526,62 @@ def run_ablation_study(
         print(f"F1={results['f1']:.4f}")
     
     all_results["variations"]["feature_subset"] = feature_results
+
+    # ==================== TEST BATCH SIZE ====================
+    print("\n[9/10] Testing batch sizes [8, 16, 32]...")
+
+    batch_size_results = {}
+    for batch_size in [8, 16, 32]:
+        print(f"  Testing batch_size={batch_size}...", end=" ")
+        results = train_variant(
+            X_train, X_threshold, y_threshold, X_eval, y_eval,
+            bottleneck_dim=4,
+            depth=3,
+            dropout_rate=0.1,
+            activation="relu",
+            batch_size=batch_size,
+            epochs=80
+        )
+        results["config"] = {
+            "bottleneck_dim": 4,
+            "depth": 3,
+            "dropout_rate": 0.1,
+            "activation": "relu",
+            "batch_size": batch_size,
+            "epochs": 80,
+        }
+        batch_size_results[f"batch_size_{batch_size}"] = results
+        print(f"F1={results['f1']:.4f}")
+
+    all_results["variations"]["batch_size"] = batch_size_results
+
+    # ==================== TEST EPOCH BUDGET ====================
+    print("\n[10/10] Testing epoch budgets [40, 80, 120]...")
+
+    epoch_results = {}
+    for epochs in [40, 80, 120]:
+        print(f"  Testing epochs={epochs}...", end=" ")
+        results = train_variant(
+            X_train, X_threshold, y_threshold, X_eval, y_eval,
+            bottleneck_dim=4,
+            depth=3,
+            dropout_rate=0.1,
+            activation="relu",
+            batch_size=16,
+            epochs=epochs
+        )
+        results["config"] = {
+            "bottleneck_dim": 4,
+            "depth": 3,
+            "dropout_rate": 0.1,
+            "activation": "relu",
+            "batch_size": 16,
+            "epochs": epochs,
+        }
+        epoch_results[f"epochs_{epochs}"] = results
+        print(f"F1={results['f1']:.4f}")
+
+    all_results["variations"]["epochs"] = epoch_results
     
     # ==================== SAVE RESULTS ====================
     print("\n" + "█" * 80)
