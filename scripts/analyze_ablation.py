@@ -282,13 +282,19 @@ def generate_analysis_report(results: Dict[str, Any], df: pd.DataFrame,
     non_baseline = df[df["variant"] != "baseline"].copy()
     best_variant_idx = non_baseline["f1"].idxmax()
     best_variant = non_baseline.loc[best_variant_idx]
+    baseline_row = df[df["variant"] == "baseline"].iloc[0]
     
     report.append(f"\nBest Overall Configuration:")
     report.append(f"  Variant: {best_variant['variant']}")
     report.append(f"  Category: {best_variant['category']}")
+    
     for key in best_variant.index:
-        if key not in ["variant", "category"] and not key.startswith(("f1", "roc_auc", "accuracy", "precision", "recall", "specificity", "tp", "fp", "fn", "tn", "epochs_run", "final_")):
-            report.append(f"  {key}: {best_variant[key]}")
+        if key not in ["variant", "category", "n_features_used", "feature_subset_pct"] and not key.startswith(("f1", "roc_auc", "accuracy", "precision", "recall", "specificity", "tp", "fp", "fn", "tn", "epochs_run", "final_")):
+            value = best_variant[key]
+            # Use baseline value if NaN
+            if pd.isna(value):
+                value = baseline_row[key]
+            report.append(f"  {key}: {value}")
     report.append(f"  F1 Score: {best_variant['f1']:.4f}")
     report.append(f"  ROC-AUC: {best_variant['roc_auc']:.4f}")
     improvement = (best_variant['f1'] - baseline['f1']) / baseline['f1'] * 100

@@ -99,14 +99,12 @@ Best Overall Configuration:
   depth: 3
   dropout_rate: 0.1
   activation: relu
-  batch_size: nan
-  epochs: nan
-  feature_subset: nan
+  batch_size: 16.0
+  epochs: 80.0
+  feature_subset: 1.0
   threshold: 0.17082329094409943
   threshold_metric: f1
   threshold_metric_score: 0.9646967791856079
-  n_features_used: nan
-  feature_subset_pct: nan
   F1 Score: 0.9629
   ROC-AUC: 0.9778
   Improvement over baseline: +2.28%
