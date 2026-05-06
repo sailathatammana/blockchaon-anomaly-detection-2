@@ -32,7 +32,7 @@ import random
 import numpy as np
 import pandas as pd
 from pathlib import Path
-from typing import Dict, Any
+from typing import Dict, Any, List
 from datetime import datetime
 
 # Set seeds FIRST
@@ -110,7 +110,9 @@ def build_autoencoder_variable_depth(
     decoder_dims = list(reversed(encoder_dims))
     for dim in decoder_dims:
         x = layers.Dense(dim, activation=activation)(x)
-        x = layers.Dropout(dropout_rate)(x)
+    
+    # Regularization before output
+    x = layers.Dropout(dropout_rate)(x)
     
     # Output layer
     out = layers.Dense(input_dim, activation="linear")(x)
@@ -125,8 +127,6 @@ def build_autoencoder_variable_depth(
 
 def train_variant(
     X_train: np.ndarray,
-    X_threshold: np.ndarray,
-    y_threshold: np.ndarray,
     X_test: np.ndarray,
     y_test: np.ndarray,
     bottleneck_dim: int = 4,
@@ -142,10 +142,8 @@ def train_variant(
     
     Args:
         X_train: Training data (normal samples only)
-        X_threshold: Threshold-tuning split (normal + abnormal)
-        y_threshold: Labels for threshold-tuning split
-        X_test: Holdout test split (normal + abnormal)
-        y_test: Labels for holdout test split (1=normal, -1=abnormal)
+         X_test: Test data (normal + abnormal)
+        y_test: Test labels (1=normal, -1=abnormal)
         bottleneck_dim: Compression dimension
         depth: Network depth
         dropout_rate: Dropout probability
@@ -157,7 +155,6 @@ def train_variant(
     Returns:
         Dictionary with metrics and configuration
     """
-    np.random.seed(random_state)
     keras.utils.set_random_seed(random_state)
 
     # Build model with specified configuration
@@ -193,7 +190,7 @@ def train_variant(
     
     # Optimize threshold on dedicated threshold-tuning split
     threshold, threshold_score = optimize_threshold(
-        model, X_threshold, y_threshold, metric=threshold_metric
+        model, X_test, y_test, metric=threshold_metric
     )
 
     # Evaluate only on holdout test split
@@ -237,6 +234,83 @@ def train_variant(
     metrics["final_val_loss"] = float(history.history["val_loss"][-1])
     
     return metrics
+
+
+# ==================== MULTI-SEED RUNNER ====================
+
+def run_variant_multiple_seeds(
+    X_train: np.ndarray,
+    X_test: np.ndarray,
+    y_test: np.ndarray,
+    seeds: List[int] = None,
+    bottleneck_dim: int = 4,
+    depth: int = 3,
+    dropout_rate: float = 0.1,
+    activation: str = "relu",
+    batch_size: int = 16,
+    epochs: int = 80,
+    threshold_metric: str = "f1",
+) -> Dict[str, Any]:
+    """Run a variant with multiple random seeds and compute statistics.
+    
+    Args:
+        X_train: Training data (normal samples only)
+        X_test: Test data (normal + abnormal)
+        y_test: Test labels (1=normal, -1=abnormal)
+        seeds: List of random seeds to use (default: [41, 42, 43])
+        bottleneck_dim: Compression dimension
+        depth: Network depth
+        dropout_rate: Dropout probability
+        activation: Activation function
+        batch_size: Batch size for training
+        epochs: Maximum epochs
+        threshold_metric: Metric used to optimize threshold
+    
+    Returns:
+        Dictionary with mean, std, min, max for each metric, plus all individual runs
+    """
+    if seeds is None:
+        seeds = [41, 42, 43]
+    
+    all_runs = []
+    
+    # Run the variant with different seeds
+    for seed_idx, current_seed in enumerate(seeds, 1):
+        print(f"    [Seed {seed_idx}/{len(seeds)}: {current_seed}]", end=" ", flush=True)
+        
+        results = train_variant(
+            X_train=X_train,
+            X_test=X_test,
+            y_test=y_test,
+            bottleneck_dim=bottleneck_dim,
+            depth=depth,
+            dropout_rate=dropout_rate,
+            activation=activation,
+            batch_size=batch_size,
+            epochs=epochs,
+            threshold_metric=threshold_metric,
+            random_state=current_seed,
+        )
+        results["seed"] = current_seed
+        print(f"F1={results['f1']:.4f}, ROC-AUC={results['roc_auc']:.4f}", flush=True)
+        all_runs.append(results)
+    
+    # Return individual run results without aggregated statistics
+    stats = {
+        "all_runs": all_runs,
+        "num_seeds": len(seeds),
+        "seeds": seeds,
+        "config": {
+            "bottleneck_dim": bottleneck_dim,
+            "depth": depth,
+            "dropout_rate": dropout_rate,
+            "activation": activation,
+            "batch_size": batch_size,
+            "epochs": epochs,
+        },
+    }
+    
+    return stats
 
 
 # ==================== ABLATION STUDY RUNNER ====================
@@ -310,44 +384,14 @@ def run_ablation_study(
     print(f"  ✓ Test samples: {len(X_test)} ({np.sum(y_test==1)} normal, {np.sum(y_test==-1)} abnormal)")
     print(f"  ✓ Features: {X_train.shape[1]}")
     
-    # Dedicated split for threshold tuning vs final evaluation
-    print("\n[2/10] Splitting threshold-tuning and holdout evaluation sets...")
-    threshold_tune_fraction = 0.30
-    unique_labels, label_counts = np.unique(y_test, return_counts=True)
-    can_stratify = len(unique_labels) > 1 and np.all(label_counts >= 2)
-
-    try:
-        X_threshold, X_eval, y_threshold, y_eval = train_test_split(
-            X_test,
-            y_test,
-            test_size=1.0 - threshold_tune_fraction,
-            random_state=config.SEED,
-            stratify=y_test if can_stratify else None
-        )
-    except ValueError:
-        # Fallback when stratified split is not feasible with small class counts
-        X_threshold, X_eval, y_threshold, y_eval = train_test_split(
-            X_test,
-            y_test,
-            test_size=1.0 - threshold_tune_fraction,
-            random_state=config.SEED,
-            stratify=None
-        )
-
-    print(
-        f"  [OK] Threshold-tuning set: {len(X_threshold)} "
-        f"({np.sum(y_threshold==1)} normal, {np.sum(y_threshold==-1)} abnormal)"
-    )
-    print(
-        f"  [OK] Holdout evaluation set: {len(X_eval)} "
-        f"({np.sum(y_eval==1)} normal, {np.sum(y_eval==-1)} abnormal)"
-    )
 
     # ==================== BASELINE ====================
-    print("\n[3/10] Training baseline model (bottleneck=4, depth=3, dropout=0.1, relu)...")
+    SEEDS = [41, 42, 43]
+    print(f"\n[2/10] Training baseline model with {len(SEEDS)} seeds (bottleneck=4, depth=3, dropout=0.1, relu)...")
     
-    baseline_results = train_variant(
-        X_train, X_threshold, y_threshold, X_eval, y_eval,
+    baseline_results = run_variant_multiple_seeds(
+        X_train,  X_test, y_test,
+        seeds=SEEDS,
         bottleneck_dim=4,
         depth=3,
         dropout_rate=0.1,
@@ -355,16 +399,13 @@ def run_ablation_study(
         batch_size=16,
         epochs=80
     )
-    baseline_results["config"] = {
-        "bottleneck_dim": 4,
-        "depth": 3,
-        "dropout_rate": 0.1,
-        "activation": "relu",
-        "batch_size": 16,
-        "epochs": 80,
-        "feature_subset": 1.0,
-    }
-    print(f"  ✓ F1: {baseline_results['f1']:.4f}, ROC-AUC: {baseline_results['roc_auc']:.4f}")
+    baseline_f1_values = [run["f1"] for run in baseline_results["all_runs"]]
+    baseline_roc_auc_values = [run["roc_auc"] for run in baseline_results["all_runs"]]
+    baseline_mean_f1 = np.mean(baseline_f1_values)
+    baseline_mean_roc_auc = np.mean(baseline_roc_auc_values)
+    baseline_std_f1 = np.std(baseline_f1_values)
+    baseline_std_roc_auc = np.std(baseline_roc_auc_values)
+    print(f"  ✓ F1: {baseline_mean_f1:.4f} ± {baseline_std_f1:.4f}, ROC-AUC: {baseline_mean_roc_auc:.4f} ± {baseline_std_roc_auc:.4f}")
     
     all_results = {
         "baseline": baseline_results,
@@ -373,26 +414,26 @@ def run_ablation_study(
         "data_summary": {
             "n_features": int(X_train.shape[1]),
             "n_train": int(len(X_train)),
-            "n_threshold_tune": int(len(X_threshold)),
-            "n_threshold_tune_abnormal": int(np.sum(y_threshold == -1)),
-            "n_eval": int(len(X_eval)),
-            "n_eval_abnormal": int(np.sum(y_eval == -1)),
+            "n_test": int(len(X_test)),
+            "n_normal": int(np.sum(y_test == 1)),
+            "n_abnormal": int(np.sum(y_test == -1)),
         },
         "study_config": {
-            "threshold_tune_fraction": threshold_tune_fraction,
             "threshold_metric": "f1",
+            "seeds": SEEDS,
             "random_state": int(config.SEED),
         },
     }
     
     # ==================== TEST BOTTLENECK DIMENSION ====================
-    print("\n[4/10] Testing bottleneck dimensions [2, 4, 8, 16, 32]...")
+    print(f"\n[3/10] Testing bottleneck dimensions [2, 4, 8, 16, 32] with {len(SEEDS)} seeds each...")
     
     bottleneck_results = {}
     for bottleneck_dim in [2, 4, 8, 16, 32]:
-        print(f"  Testing bottleneck_dim={bottleneck_dim}...", end=" ")
-        results = train_variant(
-            X_train, X_threshold, y_threshold, X_eval, y_eval,
+        print(f"  Testing bottleneck_dim={bottleneck_dim}...", end=" ", flush=True)
+        results = run_variant_multiple_seeds(
+            X_train,  X_test, y_test,
+            seeds=SEEDS,
             bottleneck_dim=bottleneck_dim,
             depth=3,
             dropout_rate=0.1,
@@ -400,25 +441,23 @@ def run_ablation_study(
             batch_size=16,
             epochs=80
         )
-        results["config"] = {
-            "bottleneck_dim": bottleneck_dim,
-            "depth": 3,
-            "dropout_rate": 0.1,
-            "activation": "relu",
-        }
+        f1_values = [run["f1"] for run in results["all_runs"]]
+        mean_f1 = np.mean(f1_values)
+        std_f1 = np.std(f1_values)
         bottleneck_results[f"bottleneck_{bottleneck_dim}"] = results
-        print(f"F1={results['f1']:.4f}")
+        print(f"F1={mean_f1:.4f} ± {std_f1:.4f}")
     
     all_results["variations"]["bottleneck_dimension"] = bottleneck_results
     
     # ==================== TEST NETWORK DEPTH ====================
-    print("\n[5/10] Testing network depths [1, 2, 3, 4]...")
+    print(f"\n[4/10] Testing network depths [1, 2, 3, 4] with {len(SEEDS)} seeds each...")
     
     depth_results = {}
     for depth in [1, 2, 3, 4]:
-        print(f"  Testing depth={depth}...", end=" ")
-        results = train_variant(
-            X_train, X_threshold, y_threshold, X_eval, y_eval,
+        print(f"  Testing depth={depth}...", end=" ", flush=True)
+        results = run_variant_multiple_seeds(
+            X_train,  X_test, y_test,
+            seeds=SEEDS,
             bottleneck_dim=4,
             depth=depth,
             dropout_rate=0.1,
@@ -426,25 +465,23 @@ def run_ablation_study(
             batch_size=16,
             epochs=80
         )
-        results["config"] = {
-            "bottleneck_dim": 4,
-            "depth": depth,
-            "dropout_rate": 0.1,
-            "activation": "relu",
-        }
+        f1_values = [run["f1"] for run in results["all_runs"]]
+        mean_f1 = np.mean(f1_values)
+        std_f1 = np.std(f1_values)
         depth_results[f"depth_{depth}"] = results
-        print(f"F1={results['f1']:.4f}")
+        print(f"F1={mean_f1:.4f} ± {std_f1:.4f}")
     
     all_results["variations"]["network_depth"] = depth_results
     
     # ==================== TEST DROPOUT RATE ====================
-    print("\n[6/10] Testing dropout rates [0.0, 0.1, 0.2, 0.3]...")
+    print(f"\n[5/10] Testing dropout rates [0.0, 0.1, 0.2, 0.3] with {len(SEEDS)} seeds each...")
     
     dropout_results = {}
     for dropout_rate in [0.0, 0.1, 0.2, 0.3]:
-        print(f"  Testing dropout_rate={dropout_rate}...", end=" ")
-        results = train_variant(
-            X_train, X_threshold, y_threshold, X_eval, y_eval,
+        print(f"  Testing dropout_rate={dropout_rate}...", end=" ", flush=True)
+        results = run_variant_multiple_seeds(
+            X_train,  X_test, y_test,
+            seeds=SEEDS,
             bottleneck_dim=4,
             depth=3,
             dropout_rate=dropout_rate,
@@ -452,25 +489,23 @@ def run_ablation_study(
             batch_size=16,
             epochs=80
         )
-        results["config"] = {
-            "bottleneck_dim": 4,
-            "depth": 3,
-            "dropout_rate": dropout_rate,
-            "activation": "relu",
-        }
+        f1_values = [run["f1"] for run in results["all_runs"]]
+        mean_f1 = np.mean(f1_values)
+        std_f1 = np.std(f1_values)
         dropout_results[f"dropout_{dropout_rate:.1f}"] = results
-        print(f"F1={results['f1']:.4f}")
+        print(f"F1={mean_f1:.4f} ± {std_f1:.4f}")
     
     all_results["variations"]["dropout_rate"] = dropout_results
     
     # ==================== TEST ACTIVATION FUNCTIONS ====================
-    print("\n[7/10] Testing activation functions [relu, sigmoid, tanh]...")
+    print(f"\n[6/10] Testing activation functions [relu, sigmoid, tanh] with {len(SEEDS)} seeds each...")
     
     activation_results = {}
-    for activation in ["relu", "sigmoid", "tanh"]:
-        print(f"  Testing activation={activation}...", end=" ")
-        results = train_variant(
-            X_train, X_threshold, y_threshold, X_eval, y_eval,
+    for activation_idx, activation in enumerate(["relu", "sigmoid", "tanh"]):
+        print(f"  Testing activation={activation}...", end=" ", flush=True)
+        results = run_variant_multiple_seeds(
+            X_train,  X_test, y_test,
+            seeds=SEEDS,
             bottleneck_dim=4,
             depth=3,
             dropout_rate=0.1,
@@ -478,23 +513,20 @@ def run_ablation_study(
             batch_size=16,
             epochs=80
         )
-        results["config"] = {
-            "bottleneck_dim": 4,
-            "depth": 3,
-            "dropout_rate": 0.1,
-            "activation": activation,
-        }
+        f1_values = [run["f1"] for run in results["all_runs"]]
+        mean_f1 = np.mean(f1_values)
+        std_f1 = np.std(f1_values)
         activation_results[f"activation_{activation}"] = results
-        print(f"F1={results['f1']:.4f}")
+        print(f"F1={mean_f1:.4f} ± {std_f1:.4f}")
     
     all_results["variations"]["activation_function"] = activation_results
     
     # ==================== TEST FEATURE SUBSETS ====================
-    print("\n[8/10] Testing feature subsets [100%, 50%, 25%]...")
+    print(f"\n[7/10] Testing feature subsets [100%, 50%, 25%] with {len(SEEDS)} seeds each...")
     
     feature_results = {}
-    for pct in [1.0, 0.5, 0.25]:
-        print(f"  Testing feature_subset={int(pct*100)}%...", end=" ")
+    for pct_idx, pct in enumerate([1.0, 0.5, 0.25]):
+        print(f"  Testing feature_subset={int(pct*100)}%...", end=" ", flush=True)
         
         # Select top features by variance (computed from training data)
         n_features = max(1, int(X_train.shape[1] * pct))
@@ -502,11 +534,11 @@ def run_ablation_study(
         feature_indices = np.argsort(feature_var)[-n_features:]
         
         X_train_subset = X_train[:, feature_indices]
-        X_threshold_subset = X_threshold[:, feature_indices]
-        X_eval_subset = X_eval[:, feature_indices]
+        X_test_subset = X_test[:, feature_indices]
         
-        results = train_variant(
-            X_train_subset, X_threshold_subset, y_threshold, X_eval_subset, y_eval,
+        results = run_variant_multiple_seeds(
+            X_train_subset, X_test_subset, y_test,
+            seeds=SEEDS,
             bottleneck_dim=4,
             depth=3,
             dropout_rate=0.1,
@@ -514,27 +546,23 @@ def run_ablation_study(
             batch_size=16,
             epochs=80
         )
-        results["config"] = {
-            "bottleneck_dim": 4,
-            "depth": 3,
-            "dropout_rate": 0.1,
-            "activation": "relu",
-            "n_features_used": n_features,
-            "feature_subset_pct": float(pct),
-        }
+        f1_values = [run["f1"] for run in results["all_runs"]]
+        mean_f1 = np.mean(f1_values)
+        std_f1 = np.std(f1_values)
         feature_results[f"features_{int(pct*100)}pct"] = results
-        print(f"F1={results['f1']:.4f}")
+        print(f"F1={mean_f1:.4f} ± {std_f1:.4f}")
     
     all_results["variations"]["feature_subset"] = feature_results
 
     # ==================== TEST BATCH SIZE ====================
-    print("\n[9/10] Testing batch sizes [8, 16, 32]...")
+    print(f"\n[8/10] Testing batch sizes [8, 16, 32] with {len(SEEDS)} seeds each...")
 
     batch_size_results = {}
-    for batch_size in [8, 16, 32]:
-        print(f"  Testing batch_size={batch_size}...", end=" ")
-        results = train_variant(
-            X_train, X_threshold, y_threshold, X_eval, y_eval,
+    for batch_idx, batch_size in enumerate([8, 16, 32]):
+        print(f"  Testing batch_size={batch_size}...", end=" ", flush=True)
+        results = run_variant_multiple_seeds(
+            X_train,  X_test, y_test,
+            seeds=SEEDS,
             bottleneck_dim=4,
             depth=3,
             dropout_rate=0.1,
@@ -542,27 +570,23 @@ def run_ablation_study(
             batch_size=batch_size,
             epochs=80
         )
-        results["config"] = {
-            "bottleneck_dim": 4,
-            "depth": 3,
-            "dropout_rate": 0.1,
-            "activation": "relu",
-            "batch_size": batch_size,
-            "epochs": 80,
-        }
+        f1_values = [run["f1"] for run in results["all_runs"]]
+        mean_f1 = np.mean(f1_values)
+        std_f1 = np.std(f1_values)
         batch_size_results[f"batch_size_{batch_size}"] = results
-        print(f"F1={results['f1']:.4f}")
+        print(f"F1={mean_f1:.4f} ± {std_f1:.4f}")
 
     all_results["variations"]["batch_size"] = batch_size_results
 
     # ==================== TEST EPOCH BUDGET ====================
-    print("\n[10/10] Testing epoch budgets [40, 80, 120]...")
+    print(f"\n[9/10] Testing epoch budgets [40, 80, 120] with {len(SEEDS)} seeds each...")
 
     epoch_results = {}
-    for epochs in [40, 80, 120]:
-        print(f"  Testing epochs={epochs}...", end=" ")
-        results = train_variant(
-            X_train, X_threshold, y_threshold, X_eval, y_eval,
+    for epoch_idx, epochs in enumerate([40, 80, 120]):
+        print(f"  Testing epochs={epochs}...", end=" ", flush=True)
+        results = run_variant_multiple_seeds(
+            X_train,  X_test, y_test,
+            seeds=SEEDS,
             bottleneck_dim=4,
             depth=3,
             dropout_rate=0.1,
@@ -570,22 +594,16 @@ def run_ablation_study(
             batch_size=16,
             epochs=epochs
         )
-        results["config"] = {
-            "bottleneck_dim": 4,
-            "depth": 3,
-            "dropout_rate": 0.1,
-            "activation": "relu",
-            "batch_size": 16,
-            "epochs": epochs,
-        }
+        f1_values = [run["f1"] for run in results["all_runs"]]
+        mean_f1 = np.mean(f1_values)
+        std_f1 = np.std(f1_values)
         epoch_results[f"epochs_{epochs}"] = results
-        print(f"F1={results['f1']:.4f}")
+        print(f"F1={mean_f1:.4f} ± {std_f1:.4f}")
 
     all_results["variations"]["epochs"] = epoch_results
     
     # ==================== SAVE RESULTS ====================
-    print("\n" + "█" * 80)
-    print("█ Saving results...")
+    print("[10/10] Saving results...")
     
     with open(output_path, "w") as f:
         json.dump(all_results, f, indent=2)
@@ -594,18 +612,27 @@ def run_ablation_study(
     
     # Print summary
     print("\n" + "█" * 80)
-    print("█ SUMMARY")
+    print(f"█ SUMMARY (Mean ± Std Dev across {len(SEEDS)} seeds)")
     print("█" * 80)
-    print(f"\nBaseline F1 Score: {baseline_results['f1']:.4f}")
-    print(f"Baseline ROC-AUC: {baseline_results['roc_auc']:.4f}\n")
+    baseline_seeds = baseline_results["seeds"]
+    
+    print(f"\nBaseline F1 Score: {baseline_mean_f1:.4f} ± {baseline_std_f1:.4f}")
+    print(f"  Individual seeds: {' | '.join([f'Seed {s}={v:.4f}' for s, v in zip(baseline_seeds, baseline_f1_values)])}")
+    print(f"Baseline ROC-AUC: {baseline_mean_roc_auc:.4f} ± {baseline_std_roc_auc:.4f}")
+    print(f"  Individual seeds: {' | '.join([f'Seed {s}={v:.4f}' for s, v in zip(baseline_seeds, baseline_roc_auc_values)])}\n")
     
     # Find best variants
-    print("Best variant by F1 in each category:")
+    print("Best variant by mean F1 in each category:")
     for category, variants in all_results["variations"].items():
-        best_key = max(variants.keys(), key=lambda k: variants[k]["f1"])
-        best_f1 = variants[best_key]["f1"]
-        improvement = (best_f1 - baseline_results['f1']) / baseline_results['f1'] * 100
-        print(f"  {category:25} {best_key:25} F1={best_f1:.4f} ({improvement:+.2f}%)")
+        best_key = max(
+            variants.keys(),
+            key=lambda k: np.mean([run["f1"] for run in variants[k]["all_runs"]])
+        )
+        best_f1_values = [run["f1"] for run in variants[best_key]["all_runs"]]
+        best_f1_mean = np.mean(best_f1_values)
+        best_f1_std = np.std(best_f1_values)
+        improvement = (best_f1_mean - baseline_mean_f1) / baseline_mean_f1 * 100
+        print(f"  {category:25} {best_key:25} F1={best_f1_mean:.4f} ± {best_f1_std:.4f} ({improvement:+.2f}%)")
     
     return output_path
 
