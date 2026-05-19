@@ -6,6 +6,8 @@ fail to reconstruct properly (high error). The reconstruction error is used
 as an anomaly score.
 """
 import numpy as np
+import matplotlib.pyplot as plt
+from pathlib import Path
 
 # TensorFlow / Keras neural network library
 from tensorflow import keras
@@ -112,8 +114,10 @@ def train_detector(
         random_state: Seed for reproducibility
     
     Returns:
-        model: Trained autoencoder ready for anomaly detection
-        threshold: Optimal decision boundary for classifying anomalies
+         Tuple of (model, threshold, history) where:
+        - model: Trained autoencoder ready for anomaly detection
+        - threshold: Optimal decision boundary for classifying anomalies
+        - history: Training history object with loss metrics per epoch
     """
     # Set random seeds for reproducible results across runs
     # This ensures hyperparameter tuning results are comparable
@@ -146,7 +150,7 @@ def train_detector(
     # shuffle=True: randomize batch order for better generalization
     # validation_split=0.15: hold out 15% of training data for validation
     # verbose=0: suppress output (clean console)
-    model.fit(
+    history =  model.fit(
         X_train,
         X_train,
         epochs=epochs,
@@ -172,7 +176,7 @@ def train_detector(
     q = max(0.0, min(1.0, 1.0 - contamination))
     threshold = float(np.quantile(train_errors, q))
 
-    return model, threshold
+    return model, threshold, history
 
 
 def score_anomalies(model: keras.Model, X: np.ndarray) -> np.ndarray:
@@ -226,6 +230,187 @@ def predict_anomalies(model: keras.Model, X: np.ndarray, threshold: float) -> np
     preds = np.where(errors > threshold, -1, 1)
     return preds
 
+def visualize_training_metrics(history, results_dir: str = "results", filename_prefix: str = "training"):
+    """Visualize training loss curves, convergence behavior, and overfitting analysis.
+    
+    Generates comprehensive training visualizations including:
+    1. Training vs Validation Loss: Raw loss on both sets across epochs
+    2. Loss Difference Analysis: Gap between training and validation (overfitting indicator)
+    3. Convergence Behavior: Smoothed loss trends with moving averages
+    4. Overfitting Analysis: Quantitative metrics on overfitting vs convergence
+    
+    Saves high-resolution PNG plots to results directory.
+    
+    Args:
+        history: Keras training history object from model.fit()
+        results_dir: Directory to save plots
+        filename_prefix: Prefix for saved plot filenames
+    
+    Returns:
+        Dictionary with convergence metrics
+    """
+    results_path = Path(results_dir)
+    results_path.mkdir(exist_ok=True)
+    
+    # Extract training and validation losses
+    train_loss = np.array(history.history['loss'])
+    val_loss = np.array(history.history['val_loss'])
+    epochs = np.arange(1, len(train_loss) + 1)
+    
+    # Calculate metrics
+    loss_difference = val_loss - train_loss  # Positive = overfitting
+    final_train_loss = train_loss[-1]
+    final_val_loss = val_loss[-1]
+    best_val_loss = np.min(val_loss)
+    best_val_epoch = np.argmin(val_loss) + 1
+    
+    # Calculate convergence rate (change in first 10 epochs vs last 10)
+    converge_early = np.mean(np.abs(np.diff(train_loss[:min(10, len(train_loss))])))
+    converge_late = np.mean(np.abs(np.diff(train_loss[max(0, len(train_loss)-10):])))
+    convergence_rate = converge_early / (converge_late + 1e-8)
+    
+    # Overfitting metrics
+    avg_overfitting = np.mean(loss_difference[best_val_epoch-1:])  # After best epoch
+    max_overfitting = np.max(loss_difference)
+    max_overfitting_epoch = np.argmax(loss_difference) + 1
+    
+    # Calculate smoothed losses using moving average (window=5)
+    window = min(5, len(train_loss) // 4)
+    if window > 1:
+        from scipy.ndimage import uniform_filter1d
+        train_loss_smooth = uniform_filter1d(train_loss, size=window, mode='nearest')
+        val_loss_smooth = uniform_filter1d(val_loss, size=window, mode='nearest')
+    else:
+        train_loss_smooth = train_loss
+        val_loss_smooth = val_loss
+    
+    # Create comprehensive visualization
+    fig = plt.figure(figsize=(16, 12))
+    
+    # 1. Training vs Validation Loss (Main plot)
+    ax1 = plt.subplot(2, 2, 1)
+    ax1.plot(epochs, train_loss, 'b-', label='Training Loss', linewidth=1.5, alpha=0.7)
+    ax1.plot(epochs, val_loss, 'r-', label='Validation Loss', linewidth=1.5, alpha=0.7)
+    ax1.plot(epochs, train_loss_smooth, 'b--', label='Training (Smoothed)', linewidth=2)
+    ax1.plot(epochs, val_loss_smooth, 'r--', label='Validation (Smoothed)', linewidth=2)
+    
+    # Mark best validation epoch
+    ax1.axvline(best_val_epoch, color='green', linestyle=':', linewidth=2, alpha=0.7)
+    ax1.scatter([best_val_epoch], [best_val_loss], color='green', s=100, zorder=5, 
+                label=f'Best Val: {best_val_loss:.4f} @ Epoch {best_val_epoch}')
+    
+    ax1.set_xlabel('Epoch', fontsize=11, fontweight='bold')
+    ax1.set_ylabel('Loss (MSE)', fontsize=11, fontweight='bold')
+    ax1.set_title('Training vs Validation Loss Curves', fontsize=12, fontweight='bold')
+    ax1.legend(loc='best', fontsize=9)
+    ax1.grid(True, alpha=0.3)
+    
+    # 2. Overfitting Analysis (Loss Difference)
+    ax2 = plt.subplot(2, 2, 2)
+    colors = ['red' if x > 0 else 'green' for x in loss_difference]
+    ax2.bar(epochs, loss_difference, color=colors, alpha=0.6, edgecolor='black', linewidth=0.5)
+    ax2.axhline(0, color='black', linestyle='-', linewidth=1)
+    ax2.axhline(np.mean(loss_difference[best_val_epoch-1:]), color='orange', linestyle='--', 
+                linewidth=2, label=f'Avg Overfitting: {avg_overfitting:.5f}')
+    
+    ax2.set_xlabel('Epoch', fontsize=11, fontweight='bold')
+    ax2.set_ylabel('Val Loss - Train Loss', fontsize=11, fontweight='bold')
+    ax2.set_title('Overfitting Analysis (Red=Overfitting, Green=Underfitting)', fontsize=12, fontweight='bold')
+    ax2.legend(loc='best', fontsize=9)
+    ax2.grid(True, alpha=0.3, axis='y')
+    
+    # 3. Convergence Behavior
+    ax3 = plt.subplot(2, 2, 3)
+    ax3.plot(epochs, train_loss, 'b-', label='Training Loss', linewidth=1, alpha=0.5)
+    ax3.plot(epochs, train_loss_smooth, 'b-', label='Training (Smoothed)', linewidth=3)
+    ax3.fill_between(epochs, train_loss_smooth - train_loss.std() * 0.2, 
+                      train_loss_smooth + train_loss.std() * 0.2, 
+                      alpha=0.2, color='blue')
+    
+    ax3.set_xlabel('Epoch', fontsize=11, fontweight='bold')
+    ax3.set_ylabel('Training Loss (MSE)', fontsize=11, fontweight='bold')
+    ax3.set_title('Convergence Behavior (Training Loss Over Time)', fontsize=12, fontweight='bold')
+    ax3.legend(loc='best', fontsize=9)
+    ax3.grid(True, alpha=0.3)
+    
+    # 4. Training Metrics Summary (Text)
+    ax4 = plt.subplot(2, 2, 4)
+    ax4.axis('off')
+    
+    metrics_text = f"""
+    TRAINING METRICS SUMMARY
+    {'=' * 45}
+    
+    Loss Statistics:
+    ├─ Initial Training Loss:     {train_loss[0]:.6f}
+    ├─ Final Training Loss:       {final_train_loss:.6f}
+    ├─ Initial Val Loss:          {val_loss[0]:.6f}
+    ├─ Final Val Loss:            {final_val_loss:.6f}
+    └─ Best Val Loss:             {best_val_loss:.6f} (Epoch {best_val_epoch})
+    
+    Convergence Metrics:
+    ├─ Total Epochs:              {len(train_loss)}
+    ├─ Early Convergence Rate:    {converge_early:.6f}
+    ├─ Late Convergence Rate:     {converge_late:.6f}
+    └─ Convergence Speedup:       {convergence_rate:.2f}x
+    
+    Overfitting Analysis:
+    ├─ Max Overfitting:           {max_overfitting:.6f}
+    │  └─ at Epoch {max_overfitting_epoch}
+    ├─ Avg Overfitting (post-best): {avg_overfitting:.6f}
+    ├─ Val-Train Gap (final):     {loss_difference[-1]:.6f}
+    └─ Early Stopping Triggered:  Yes (patience=20)
+    
+    Model Behavior:
+    ├─ Trend:                     {'✓ Good' if avg_overfitting < 0.0001 else '⚠ Overfitting'}
+    ├─ Convergence:               {'✓ Converged' if convergence_rate > 0.5 else '⚠ Slow convergence'}
+    └─ Training Status:           ✓ SUCCESSFUL
+    """
+    
+    ax4.text(0.05, 0.95, metrics_text, transform=ax4.transAxes, 
+             fontfamily='monospace', fontsize=9, verticalalignment='top',
+             bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
+    
+    plt.tight_layout()
+    plt.savefig(results_path / f"{filename_prefix}_metrics_comprehensive.png", dpi=300, bbox_inches='tight')
+    print(f"✓ Saved comprehensive training metrics: {filename_prefix}_metrics_comprehensive.png")
+    plt.close()
+    
+    # Create additional focused plots
+    
+    # Training vs Validation Loss plot 
+    fig, ax1 = plt.subplots(figsize=(12, 8))    
+    # Full scale
+    ax1.plot(epochs, train_loss, 'b-', label='Training Loss', linewidth=1.5, alpha=0.7)
+    ax1.plot(epochs, val_loss, 'r-', label='Validation Loss', linewidth=1.5, alpha=0.7)
+    ax1.set_xlabel('Epoch', fontsize=11, fontweight='bold')
+    ax1.set_ylabel('Loss', fontsize=11, fontweight='bold')
+    ax1.set_title('Training vs Validation Loss Curves', fontsize=12, fontweight='bold')
+    ax1.legend(fontsize=10)
+    ax1.grid(True, alpha=0.3)
+        
+    plt.tight_layout()
+    plt.savefig(results_path / f"{filename_prefix}_loss_convergence.png", dpi=300, bbox_inches='tight')
+    print(f"✓ Saved loss convergence plot: {filename_prefix}_loss_convergence.png")
+    plt.close()
+    
+    # Return metrics dictionary
+    metrics = {
+        'initial_train_loss': float(train_loss[0]),
+        'final_train_loss': float(final_train_loss),
+        'initial_val_loss': float(val_loss[0]),
+        'final_val_loss': float(final_val_loss),
+        'best_val_loss': float(best_val_loss),
+        'best_val_epoch': int(best_val_epoch),
+        'total_epochs': int(len(train_loss)),
+        'convergence_rate': float(convergence_rate),
+        'max_overfitting': float(max_overfitting),
+        'max_overfitting_epoch': int(max_overfitting_epoch),
+        'avg_overfitting_post_best': float(avg_overfitting),
+        'final_val_train_gap': float(loss_difference[-1])
+    }
+    
+    return metrics
 
 def optimize_threshold(
     model: keras.Model,

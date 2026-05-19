@@ -28,7 +28,7 @@ import tensorflow as tf
 import config
 from data_loader import EducationalDataLoader
 from preprocessing import EducationalDataPreprocessor
-from autoencoder import train_detector, predict_anomalies, score_anomalies, optimize_threshold
+from autoencoder import train_detector, predict_anomalies, score_anomalies, optimize_threshold, visualize_training_metrics
 from blockchain_logger import PermissionedBlockchain
 
 # Set seeds after imports
@@ -162,11 +162,11 @@ def train_and_evaluate_model(X_train_scaled, X_test_scaled, feature_names, scale
         
     # Train autoencoder
     print("\n" + "█" * 70)
-    print("█ STEP 5: AUTOENCODER TRAINING")
+    print("█ STEP 5A: AUTOENCODER TRAINING")
     print("█" * 70)
     print(f"\nTraining on {len(X_train_scaled)} samples (This may take a moment...)")
     
-    model, threshold = train_detector(
+    model, threshold, history = train_detector(
         X_train_scaled, 
         contamination=config.INJECTION_FRAC, 
         bottleneck_dim=config.BOTTLENECK_DIM,
@@ -176,6 +176,20 @@ def train_and_evaluate_model(X_train_scaled, X_test_scaled, feature_names, scale
     )
     
     print("\nTraining completed successfully!")
+
+        # Visualize training metrics
+    print("\n" + "█" * 70)
+    print("█ STEP 5B: TRAINING METRICS VISUALIZATION")
+    print("█" * 70)
+    
+    training_metrics = visualize_training_metrics(history, results_dir="results", filename_prefix="pipeline_training")
+    
+    print(f"\n✓ Training metrics visualized and saved")
+    
+    # Save training metrics to JSON
+    with open(Path("results") / "training_metrics.json", 'w') as f:
+        json.dump(training_metrics, f, indent=2)
+    print(f"✓ Training metrics saved to training_metrics.json")
 
     # Inject synthetic anomalies
     print("\n" + "█" * 70)
