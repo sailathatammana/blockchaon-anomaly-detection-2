@@ -379,29 +379,17 @@ def visualize_training_metrics(history, results_dir: str = "results", filename_p
     
     # Create additional focused plots
     
-    # Loss convergence plot (zoomed into convergence region)
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5))
+    # Training vs Validation Loss Curves plot
+    fig, ax1 = plt.subplots(figsize=(12, 8)) 
     
     # Full scale
     ax1.plot(epochs, train_loss, 'b-', label='Training Loss', linewidth=2, alpha=0.7)
     ax1.plot(epochs, val_loss, 'r-', label='Validation Loss', linewidth=2, alpha=0.7)
-    ax1.scatter([best_val_epoch], [best_val_loss], color='green', s=100, zorder=5)
     ax1.set_xlabel('Epoch', fontsize=11, fontweight='bold')
     ax1.set_ylabel('Loss', fontsize=11, fontweight='bold')
-    ax1.set_title('Full Training History', fontsize=12, fontweight='bold')
+    ax1.set_title('Training vs Validation Loss Curves', fontsize=12, fontweight='bold')
     ax1.legend(fontsize=10)
     ax1.grid(True, alpha=0.3)
-    
-    # Zoomed into last 30% of training
-    zoom_start = max(0, len(epochs) - len(epochs) // 3)
-    ax2.plot(epochs[zoom_start:], train_loss[zoom_start:], 'b-', label='Training Loss', linewidth=2)
-    ax2.plot(epochs[zoom_start:], val_loss[zoom_start:], 'r-', label='Validation Loss', linewidth=2)
-    ax2.scatter([best_val_epoch], [best_val_loss], color='green', s=100, zorder=5, label='Best')
-    ax2.set_xlabel('Epoch', fontsize=11, fontweight='bold')
-    ax2.set_ylabel('Loss', fontsize=11, fontweight='bold')
-    ax2.set_title('Convergence Region (Last 30% of Training)', fontsize=12, fontweight='bold')
-    ax2.legend(fontsize=10)
-    ax2.grid(True, alpha=0.3)
     
     plt.tight_layout()
     plt.savefig(results_path / f"{filename_prefix}_loss_convergence.png", dpi=300, bbox_inches='tight')
