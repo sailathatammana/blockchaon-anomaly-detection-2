@@ -2,10 +2,11 @@
 
 This script runs a fair comparison:
 1. Both models trained on the same data splits
-2. Same synthetic anomalies injected into test set
+2. Same synthetic anomalies injected into validation and test sets
 3. Same evaluation metrics for fair comparison
 4. Detailed results and visualizations
 """
+
 import os
 import sys
 import json
@@ -67,6 +68,28 @@ def inject_anomalies(X_test, contamination_frac, noise_scale, seed):
     X_test_corrupted[anomaly_indices] += noise
     
     return X_test_corrupted, y_true, anomaly_indices
+
+
+def optimize_threshold_if(scores, y_true):
+    """Find Isolation Forest threshold that maximizes F1 score."""
+    best_threshold = None
+    best_f1 = -1
+    
+    thresholds = np.linspace(
+        np.percentile(scores, 1),
+        np.percentile(scores, 99.9),
+        300
+    )
+    
+    for threshold in thresholds:
+        y_pred = np.where(scores >= threshold, -1, 1)
+        score = f1_score(y_true, y_pred, pos_label=-1)
+        
+        if score > best_f1:
+            best_f1 = score
+            best_threshold = threshold
+    
+    return best_threshold, best_f1
 
 
 def evaluate_model(y_true, y_pred, scores, model_name="Model"):
@@ -263,7 +286,7 @@ def main(data_dir: str = "data", results_dir: str = "results"):
     print("STEP 1: EXTRACTING DATA FROM PIPELINE")
     print("=" * 80)
     
-    X_train_scaled, X_test_scaled, feature_names, scaler, _ = load_and_preprocess_data(
+    X_train_scaled, X_val_scaled, X_test_scaled, feature_names, scaler, val_ids, test_ids = load_and_preprocess_data(
         data_dir=data_dir,
         results_dir=results_dir
     )
@@ -273,6 +296,7 @@ def main(data_dir: str = "data", results_dir: str = "results"):
         return
     
     print(f"✓ Training set: {X_train_scaled.shape}")
+    print(f"✓ Validation set: {X_val_scaled.shape}")
     print(f"✓ Test set: {X_test_scaled.shape}")
     print(f"✓ Features: {len(feature_names)}")
     
@@ -281,25 +305,35 @@ def main(data_dir: str = "data", results_dir: str = "results"):
     print(f"STEP 2: INJECTING SYNTHETIC ANOMALIES ({config.INJECTION_FRAC*100:.0f}% Gaussian Noise)")
     print("=" * 80)
     
-    X_test_corrupted, y_true, anomaly_indices = inject_anomalies(
-        X_test_scaled.copy(),
+    X_val_corrupted, y_val, val_anomaly_indices = inject_anomalies(
+        X_val_scaled.copy(),
         contamination_frac=config.INJECTION_FRAC,
         noise_scale=config.NOISE_SCALE,
         seed=config.SEED
     )
     
+    X_test_corrupted, y_true, anomaly_indices = inject_anomalies(
+        X_test_scaled.copy(),
+        contamination_frac=config.INJECTION_FRAC,
+        noise_scale=config.NOISE_SCALE,
+        seed=config.SEED + 1
+    )
+    
+    n_val_anomalies = np.sum(y_val == -1)
     n_anomalies = np.sum(y_true == -1)
     n_normal = np.sum(y_true == 1)
+    
+    print(f"✓ Injected {n_val_anomalies} anomalies into {len(X_val_corrupted)} validation samples")
     print(f"✓ Injected {n_anomalies} anomalies into {len(X_test_corrupted)} test samples")
-    print(f"  Normal samples: {n_normal}")
-    print(f"  Anomalous samples: {n_anomalies}")
+    print(f"  Normal test samples: {n_normal}")
+    print(f"  Anomalous test samples: {n_anomalies}")
     
     # STEP 3: Train AUTOENCODER
     print("\n" + "=" * 80)
     print("STEP 3: TRAINING AUTOENCODER")
     print("=" * 80)
     
-    model_ae, threshold_ae = train_detector(
+    model_ae, threshold_ae, _ = train_detector(
         X_train_scaled,
         contamination=config.INJECTION_FRAC,
         bottleneck_dim=config.BOTTLENECK_DIM,
@@ -349,51 +383,57 @@ def main(data_dir: str = "data", results_dir: str = "results"):
     print("✓ VAE training completed")
     print(f"  Initial threshold: {threshold_vae:.5f}")
     
-    # STEP 6: Score and predict on test set
+    # STEP 6: Optimize thresholds on validation set
     print("\n" + "=" * 80)
-    print("STEP 6: EVALUATING MODELS ON TEST SET")
+    print("STEP 6: OPTIMIZING THRESHOLDS ON VALIDATION SET")
+    print("=" * 80)
+    
+    if config.OPTIMIZE_THRESHOLD:
+        print("Optimizing thresholds for best F1 balance...")
+        
+        threshold_ae_opt, validation_f1_ae = optimize_threshold(
+            model_ae, X_val_corrupted, y_val, metric=config.THRESHOLD_METRIC
+        )
+        print(f"✓ Autoencoder optimal threshold: {threshold_ae_opt:.5f}")
+        
+        scores_if_val = score_anomalies_if(model_if, X_val_corrupted)
+        threshold_if_opt, validation_f1_if = optimize_threshold_if(
+            scores_if_val, y_val
+        )
+        print(f"✓ Isolation Forest optimal threshold: {threshold_if_opt:.5f}")
+        
+        threshold_vae_opt, validation_f1_vae = optimize_threshold_vae(
+            model_vae, X_val_corrupted, y_val, metric=config.THRESHOLD_METRIC
+        )
+        print(f"✓ VAE optimal threshold: {threshold_vae_opt:.5f}")
+    else:
+        threshold_ae_opt = threshold_ae
+        threshold_if_opt = threshold_if
+        threshold_vae_opt = threshold_vae
+        validation_f1_ae = None
+        validation_f1_if = None
+        validation_f1_vae = None
+    
+    # STEP 7: Score and predict on test set
+    print("\n" + "=" * 80)
+    print("STEP 7: EVALUATING MODELS ON TEST SET")
     print("=" * 80)
     
     # Autoencoder
     scores_ae = score_anomalies(model_ae, X_test_corrupted)
-    
-    if config.OPTIMIZE_THRESHOLD:
-        print("Optimizing thresholds for best F1 balance...")
-        threshold_ae_opt, _ = optimize_threshold(
-            model_ae, X_test_corrupted, y_true, metric=config.THRESHOLD_METRIC
-        )
-        print(f"✓ Autoencoder optimal threshold: {threshold_ae_opt:.5f}")
-    else:
-        threshold_ae_opt = threshold_ae
-    
     preds_ae = predict_anomalies(model_ae, X_test_corrupted, threshold_ae_opt)
     
     # Isolation Forest
     scores_if = score_anomalies_if(model_if, X_test_corrupted)
-    threshold_if_opt = get_isolation_forest_threshold(
-        model_if,
-        X_test_corrupted,
-        contamination=config.INJECTION_FRAC
-    )
     preds_if = predict_anomalies_if(model_if, X_test_corrupted, threshold_if_opt)
-    
-    print(f"✓ Isolation Forest threshold: {threshold_if_opt:.5f}")
     
     # VAE
     scores_vae = score_anomalies_vae(model_vae, X_test_corrupted)
-    if config.OPTIMIZE_THRESHOLD:
-        threshold_vae_opt, _ = optimize_threshold_vae(
-            model_vae, X_test_corrupted, y_true, metric=config.THRESHOLD_METRIC
-        )
-        print(f"✓ VAE optimal threshold: {threshold_vae_opt:.5f}")
-    else:
-        threshold_vae_opt = threshold_vae
-        
     preds_vae = predict_anomalies_vae(model_vae, X_test_corrupted, threshold_vae_opt)
     
-    # STEP 7: Evaluate models
+    # STEP 8: Evaluate models
     print("\n" + "=" * 80)
-    print("STEP 7: COMPUTING EVALUATION METRICS")
+    print("STEP 8: COMPUTING EVALUATION METRICS")
     print("=" * 80)
     
     metrics_ae = evaluate_model(y_true, preds_ae, scores_ae, "Autoencoder")
@@ -405,9 +445,9 @@ def main(data_dir: str = "data", results_dir: str = "results"):
     # Display results
     print(format_metrics_table(metrics_ae, metrics_if, metrics_vae))
     
-    # STEP 8: Save detailed results
+    # STEP 9: Save detailed results
     print("\n" + "=" * 80)
-    print("STEP 8: SAVING RESULTS")
+    print("STEP 9: SAVING RESULTS")
     print("=" * 80)
     
     # Save comparison results to JSON
@@ -427,11 +467,24 @@ def main(data_dir: str = "data", results_dir: str = "results"):
         "autoencoder": convert_to_serializable(metrics_ae),
         "isolation_forest": convert_to_serializable(metrics_if),
         "vae": convert_to_serializable(metrics_vae),
+        "train_set_size": int(len(X_train_scaled)),
+        "validation_set_size": int(len(X_val_corrupted)),
         "test_set_size": int(len(X_test_corrupted)),
+        "n_validation_anomalies": int(n_val_anomalies),
         "n_anomalies_injected": int(n_anomalies),
         "n_normal_samples": int(n_normal),
         "contamination_rate": float(config.INJECTION_FRAC),
         "noise_scale": float(config.NOISE_SCALE),
+        "thresholds": {
+            "autoencoder": float(threshold_ae_opt),
+            "isolation_forest": float(threshold_if_opt),
+            "vae": float(threshold_vae_opt),
+        },
+        "validation_f1": {
+            "autoencoder": float(validation_f1_ae) if validation_f1_ae is not None else None,
+            "isolation_forest": float(validation_f1_if) if validation_f1_if is not None else None,
+            "vae": float(validation_f1_vae) if validation_f1_vae is not None else None,
+        }
     }
     
     results_file = results_path / "model_comparison.json"

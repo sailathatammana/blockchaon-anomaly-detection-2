@@ -1,0 +1,163 @@
+================================================================================
+OULAD ABLATION STUDY ANALYSIS REPORT
+================================================================================
+Random Seeds: 41, 42, 43, 44, 45
+
+EXPERIMENTAL SETUP
+--------------------------------------------------------------------------------
+  Random Seeds: 41, 42, 43, 44, 45
+  Split: 60/15/25
+  Features: 31
+  Injection fraction: 0.12
+  Baseline bottleneck dimension: 4
+  Baseline network depth: 3
+  Baseline noise scale: 1.8
+
+BASELINE PERFORMANCE
+--------------------------------------------------------------------------------
+  F1 Score: 0.9767 ± 0.0099
+  ROC-AUC:  0.9990 ± 0.0006
+  Precision: 0.9624 ± 0.0161
+  Recall:    0.9914 ± 0.0069
+
+COMPONENT IMPACT ANALYSIS
+--------------------------------------------------------------------------------
+
+BOTTLENECK DIMENSION
+  ----------------------------------------------------------------------------
+  bottleneck_2
+    Seed 41: F1=0.9748 ROC-AUC=0.9989
+    Seed 42: F1=0.9693 ROC-AUC=0.9981
+    Seed 43: F1=0.9663 ROC-AUC=0.9987
+    Seed 44: F1=0.9666 ROC-AUC=0.9977
+    Seed 45: F1=0.9716 ROC-AUC=0.9989
+    Mean: F1=0.9697 ± 0.0036 ROC-AUC=0.9984 ± 0.0005
+  bottleneck_4
+    Seed 41: F1=0.9857 ROC-AUC=0.9996
+    Seed 42: F1=0.9832 ROC-AUC=0.9993
+    Seed 43: F1=0.9779 ROC-AUC=0.9993
+    Seed 44: F1=0.9760 ROC-AUC=0.9989
+    Seed 45: F1=0.9604 ROC-AUC=0.9980
+    Mean: F1=0.9767 ± 0.0099 ROC-AUC=0.9990 ± 0.0006
+  bottleneck_8
+    Seed 41: F1=0.9928 ROC-AUC=0.9999
+    Seed 42: F1=0.9939 ROC-AUC=0.9999
+    Seed 43: F1=0.9959 ROC-AUC=0.9999
+    Seed 44: F1=0.9898 ROC-AUC=0.9998
+    Seed 45: F1=0.9944 ROC-AUC=0.9999
+    Mean: F1=0.9934 ± 0.0023 ROC-AUC=0.9999 ± 0.0001
+  bottleneck_16
+    Seed 41: F1=0.9980 ROC-AUC=1.0000
+    Seed 42: F1=0.9980 ROC-AUC=1.0000
+    Seed 43: F1=0.9985 ROC-AUC=1.0000
+    Seed 44: F1=0.9959 ROC-AUC=1.0000
+    Seed 45: F1=0.9949 ROC-AUC=1.0000
+    Mean: F1=0.9970 ± 0.0016 ROC-AUC=1.0000 ± 0.0000
+  bottleneck_32
+    Seed 41: F1=0.9974 ROC-AUC=1.0000
+    Seed 42: F1=0.9985 ROC-AUC=0.9999
+    Seed 43: F1=0.9985 ROC-AUC=1.0000
+    Seed 44: F1=0.9954 ROC-AUC=0.9998
+    Seed 45: F1=0.9949 ROC-AUC=1.0000
+    Mean: F1=0.9969 ± 0.0017 ROC-AUC=0.9999 ± 0.0001
+  ✓ Best: bottleneck_16 Mean F1=0.9970 (+2.09%)
+
+NETWORK DEPTH
+  ----------------------------------------------------------------------------
+  depth_1
+    Seed 41: F1=0.9769 ROC-AUC=0.9987
+    Seed 42: F1=0.9752 ROC-AUC=0.9987
+    Seed 43: F1=0.9456 ROC-AUC=0.9976
+    Seed 44: F1=0.9322 ROC-AUC=0.9955
+    Seed 45: F1=0.9739 ROC-AUC=0.9985
+    Mean: F1=0.9608 ± 0.0205 ROC-AUC=0.9978 ± 0.0013
+  depth_2
+    Seed 41: F1=0.9779 ROC-AUC=0.9988
+    Seed 42: F1=0.9727 ROC-AUC=0.9988
+    Seed 43: F1=0.9720 ROC-AUC=0.9990
+    Seed 44: F1=0.9711 ROC-AUC=0.9987
+    Seed 45: F1=0.9803 ROC-AUC=0.9990
+    Mean: F1=0.9748 ± 0.0041 ROC-AUC=0.9989 ± 0.0002
+  depth_3
+    Seed 41: F1=0.9857 ROC-AUC=0.9996
+    Seed 42: F1=0.9832 ROC-AUC=0.9993
+    Seed 43: F1=0.9779 ROC-AUC=0.9993
+    Seed 44: F1=0.9760 ROC-AUC=0.9989
+    Seed 45: F1=0.9604 ROC-AUC=0.9980
+    Mean: F1=0.9767 ± 0.0099 ROC-AUC=0.9990 ± 0.0006
+  depth_4
+    Seed 41: F1=0.9651 ROC-AUC=0.9981
+    Seed 42: F1=0.9744 ROC-AUC=0.9984
+    Seed 43: F1=0.9741 ROC-AUC=0.9995
+    Seed 44: F1=0.9798 ROC-AUC=0.9990
+    Seed 45: F1=0.9739 ROC-AUC=0.9991
+    Mean: F1=0.9735 ± 0.0053 ROC-AUC=0.9988 ± 0.0006
+  ✓ Best: depth_3 Mean F1=0.9767 (+0.00%)
+
+NOISE SCALE SENSITIVITY
+  ----------------------------------------------------------------------------
+  noise_scale_0.5
+    Seed 41: F1=0.5345 ROC-AUC=0.9001
+    Seed 42: F1=0.6395 ROC-AUC=0.9328
+    Seed 43: F1=0.6040 ROC-AUC=0.9270
+    Seed 44: F1=0.5434 ROC-AUC=0.9006
+    Seed 45: F1=0.5165 ROC-AUC=0.8768
+    Mean: F1=0.5676 ± 0.0519 ROC-AUC=0.9074 ± 0.0227
+  noise_scale_1.0
+    Seed 41: F1=0.8970 ROC-AUC=0.9936
+    Seed 42: F1=0.9245 ROC-AUC=0.9954
+    Seed 43: F1=0.9059 ROC-AUC=0.9927
+    Seed 44: F1=0.8861 ROC-AUC=0.9906
+    Seed 45: F1=0.8696 ROC-AUC=0.9868
+    Mean: F1=0.8966 ± 0.0207 ROC-AUC=0.9918 ± 0.0033
+  noise_scale_1.8
+    Seed 41: F1=0.9857 ROC-AUC=0.9996
+    Seed 42: F1=0.9832 ROC-AUC=0.9993
+    Seed 43: F1=0.9779 ROC-AUC=0.9993
+    Seed 44: F1=0.9760 ROC-AUC=0.9989
+    Seed 45: F1=0.9604 ROC-AUC=0.9980
+    Mean: F1=0.9767 ± 0.0099 ROC-AUC=0.9990 ± 0.0006
+  noise_scale_2.5
+    Seed 41: F1=0.9954 ROC-AUC=1.0000
+    Seed 42: F1=0.9929 ROC-AUC=0.9998
+    Seed 43: F1=0.9909 ROC-AUC=1.0000
+    Seed 44: F1=0.9872 ROC-AUC=0.9999
+    Seed 45: F1=0.9798 ROC-AUC=0.9998
+    Mean: F1=0.9892 ± 0.0061 ROC-AUC=0.9999 ± 0.0001
+  noise_scale_4.0
+    Seed 41: F1=0.9985 ROC-AUC=1.0000
+    Seed 42: F1=0.9974 ROC-AUC=1.0000
+    Seed 43: F1=1.0000 ROC-AUC=1.0000
+    Seed 44: F1=0.9995 ROC-AUC=1.0000
+    Seed 45: F1=0.9995 ROC-AUC=1.0000
+    Mean: F1=0.9990 ± 0.0010 ROC-AUC=1.0000 ± 0.0000
+  ✓ Highest tested severity: noise_scale_4.0 Mean F1=0.9990
+
+
+================================================================================
+KEY FINDINGS
+================================================================================
+
+Best Architectural Variant:
+  Bottleneck dimension: 16
+  Mean F1 Score: 0.9970 ± 0.0016
+  Mean ROC-AUC: 1.0000 ± 0.0000
+
+Best Network Depth:
+  Depth: 3
+  Mean F1 Score: 0.9767 ± 0.0099
+
+Noise Scale Sensitivity:
+  Highest tested severity: 4.0
+  Mean F1 Score: 0.9990 ± 0.0010
+  Mean ROC-AUC: 1.0000 ± 0.0000
+
+  Higher noise scales represent stronger synthetic anomalies and are
+  treated as a sensitivity analysis rather than model selection.
+
+
+Recommendations:
+  1. Compare configurations using mean performance across all seeds
+  2. Keep noise scale separate from model hyperparameter selection
+  3. Report the exact baseline configuration used for the main experiments
+  4. Avoid selecting configurations based on a single random seed

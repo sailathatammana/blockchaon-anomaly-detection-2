@@ -1,0 +1,816 @@
+"""Run model comparison across multiple random seeds.
+
+This script evaluates Autoencoder, VAE, Isolation Forest and PCA
+using repeated train/validation/test splits.
+"""
+
+import os
+import sys
+import json
+import random
+import numpy as np
+import pandas as pd
+import tensorflow as tf
+from pathlib import Path
+from scipy import stats
+
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import (
+    accuracy_score,
+    precision_score,
+    recall_score,
+    f1_score,
+    roc_auc_score,
+    average_precision_score,
+    balanced_accuracy_score,
+    matthews_corrcoef,
+    confusion_matrix
+)
+from sklearn.decomposition import PCA
+
+# Import project modules
+import config
+from data_loader import EducationalDataLoader
+from preprocessing import EducationalDataPreprocessor
+from autoencoder import train_detector, score_anomalies
+from vae_baseline import train_vae, score_anomalies_vae
+from isolation_forest_baseline import train_isolation_forest, score_anomalies_if
+
+
+SEEDS = [41, 42, 43, 44, 45]
+
+
+def load_data(data_dir="data", results_dir="results"):
+    """Load and preprocess OULAD data before splitting."""
+
+    data_path = Path(data_dir)
+    results_path = Path(results_dir)
+    results_path.mkdir(exist_ok=True)
+
+    print("\n" + "=" * 80)
+    print("LOADING AND PREPROCESSING OULAD DATA")
+    print("=" * 80)
+
+    loader = EducationalDataLoader(data_dir=str(data_path))
+    loader.load_all_datasets()
+    loader.get_summary_statistics()
+
+    merged_df = loader.create_merged_dataset()
+
+    print(f"\n✓ Merged dataset shape: {merged_df.shape}")
+
+    merged_df.to_csv(
+        results_path / "merged_dataset.csv",
+        index=False
+    )
+
+    preprocessor = EducationalDataPreprocessor()
+
+    profiles = preprocessor.create_student_profiles(
+        merged_df
+    )
+
+    print(f"✓ Student profiles created: {profiles.shape}")
+
+    profiles.to_csv(
+        results_path / "student_profiles.csv",
+        index=False
+    )
+
+    X, feature_names = preprocessor.prepare_for_autoencoder(
+        profiles
+    )
+
+    print(f"✓ Features prepared: {X.shape}")
+    print(f"✓ Number of features: {len(feature_names)}")
+
+    with open(
+        results_path / "feature_names.json",
+        "w"
+    ) as f:
+        json.dump(feature_names, f, indent=2)
+
+    return X, feature_names, preprocessor
+
+
+def split_and_normalize(X, preprocessor, seed):
+    """Create train, validation and test split for one seed."""
+
+    X_train_val, X_test = train_test_split(
+        X,
+        test_size=config.TEST_SIZE,
+        random_state=seed
+    )
+
+    val_fraction = (
+        config.VAL_SIZE /
+        (config.TRAIN_SIZE + config.VAL_SIZE)
+    )
+
+    X_train, X_val = train_test_split(
+        X_train_val,
+        test_size=val_fraction,
+        random_state=seed
+    )
+
+    # Fit scaler only on training data
+    scaler, X_train_scaled = preprocessor.normalize_features(
+        X_train
+    )
+
+    X_val_scaled = scaler.transform(
+        X_val
+    )
+
+    X_test_scaled = scaler.transform(
+        X_test
+    )
+
+    return (
+        X_train_scaled,
+        X_val_scaled,
+        X_test_scaled
+    )
+
+
+def inject_anomalies(X_data, contamination_frac, noise_scale, seed):
+    """Inject synthetic Gaussian noise anomalies."""
+
+    np.random.seed(seed)
+
+    n_samples = len(X_data)
+    n_anomalies = int(
+        n_samples * contamination_frac
+    )
+
+    y_true = np.ones(n_samples)
+
+    anomaly_indices = np.random.choice(
+        n_samples,
+        size=n_anomalies,
+        replace=False
+    )
+
+    y_true[anomaly_indices] = -1
+
+    X_corrupted = X_data.copy()
+
+    noise = np.random.normal(
+        loc=0.0,
+        scale=noise_scale,
+        size=(n_anomalies, X_data.shape[1])
+    )
+
+    X_corrupted[anomaly_indices] += noise
+
+    return X_corrupted, y_true, anomaly_indices
+
+
+def find_best_threshold(
+    scores,
+    y_true,
+    q_low=0.05,
+    q_high=0.999,
+    n_grid=400
+):
+    """Find threshold that maximizes validation F1."""
+
+    thresholds = np.quantile(
+        scores,
+        np.linspace(q_low, q_high, n_grid)
+    )
+
+    best_threshold = thresholds[0]
+    best_f1 = 0.0
+
+    for threshold in thresholds:
+
+        predictions = np.where(
+            scores > threshold,
+            -1,
+            1
+        )
+
+        if np.sum(predictions == -1) == 0:
+            continue
+
+        current_f1 = f1_score(
+            y_true,
+            predictions,
+            pos_label=-1,
+            zero_division=0
+        )
+
+        if current_f1 > best_f1:
+            best_f1 = current_f1
+            best_threshold = threshold
+
+    return float(best_threshold)
+
+
+def calculate_metrics(y_true, predictions, scores):
+    """Calculate evaluation metrics."""
+
+    accuracy = accuracy_score(
+        y_true,
+        predictions
+    )
+
+    precision = precision_score(
+        y_true,
+        predictions,
+        pos_label=-1,
+        zero_division=0
+    )
+
+    recall = recall_score(
+        y_true,
+        predictions,
+        pos_label=-1,
+        zero_division=0
+    )
+
+    f1 = f1_score(
+        y_true,
+        predictions,
+        pos_label=-1,
+        zero_division=0
+    )
+
+    y_binary = (
+        np.asarray(y_true) == -1
+    ).astype(int)
+
+    roc_auc = roc_auc_score(
+        y_binary,
+        scores
+    )
+
+    pr_auc = average_precision_score(
+        y_binary,
+        scores
+    )
+
+    balanced_accuracy = balanced_accuracy_score(
+        y_true,
+        predictions
+    )
+
+    mcc = matthews_corrcoef(
+        y_true,
+        predictions
+    )
+
+    tn, fp, fn, tp = confusion_matrix(
+        y_true,
+        predictions,
+        labels=[1, -1]
+    ).ravel()
+
+    specificity = (
+        tn / (tn + fp)
+        if (tn + fp) > 0
+        else 0
+    )
+
+    fpr = (
+        fp / (fp + tn)
+        if (fp + tn) > 0
+        else 0
+    )
+
+    return {
+        "accuracy": float(accuracy),
+        "precision": float(precision),
+        "recall": float(recall),
+        "f1": float(f1),
+        "roc_auc": float(roc_auc),
+        "pr_auc": float(pr_auc),
+        "balanced_accuracy": float(balanced_accuracy),
+        "mcc": float(mcc),
+        "specificity": float(specificity),
+        "fpr": float(fpr),
+        "tp": int(tp),
+        "fp": int(fp),
+        "fn": int(fn),
+        "tn": int(tn)
+    }
+
+
+def score_anomalies_pca(model, X):
+    """Calculate PCA reconstruction error."""
+
+    transformed = model.transform(X)
+    reconstructed = model.inverse_transform(
+        transformed
+    )
+
+    scores = np.mean(
+        np.square(X - reconstructed),
+        axis=1
+    )
+
+    return scores
+
+
+def run_seed(X, preprocessor, seed):
+    """Run comparison for one random seed."""
+
+    print("\n" + "=" * 80)
+    print(f"SEED {seed}")
+    print("=" * 80)
+
+    random.seed(seed)
+    np.random.seed(seed)
+    tf.random.set_seed(seed)
+
+    # Create a new split for this seed
+    X_train, X_val, X_test = split_and_normalize(
+        X,
+        preprocessor,
+        seed
+    )
+
+    print(f"\nTrain:      {len(X_train)}")
+    print(f"Validation: {len(X_val)}")
+    print(f"Test:       {len(X_test)}")
+
+    # Inject validation anomalies
+    X_val_anomaly, y_val, val_indices = inject_anomalies(
+        X_val,
+        contamination_frac=config.INJECTION_FRAC,
+        noise_scale=config.NOISE_SCALE,
+        seed=seed
+    )
+
+    # Inject test anomalies independently
+    X_test_anomaly, y_test, test_indices = inject_anomalies(
+        X_test,
+        contamination_frac=config.INJECTION_FRAC,
+        noise_scale=config.NOISE_SCALE,
+        seed=seed + 1
+    )
+
+    print(
+        f"Validation anomalies: {len(val_indices)}"
+    )
+
+    print(
+        f"Test anomalies:       {len(test_indices)}"
+    )
+
+    results = {
+        "seed": seed
+    }
+
+    thresholds = {}
+
+    # ---------------------------------------------------------
+    # Autoencoder
+    # ---------------------------------------------------------
+
+    print("\nTraining Autoencoder...")
+
+    model_ae, _, _ = train_detector(
+        X_train,
+        contamination=config.INJECTION_FRAC,
+        bottleneck_dim=config.BOTTLENECK_DIM,
+        epochs=config.EPOCHS,
+        batch_size=config.BATCH_SIZE,
+        random_state=seed
+    )
+
+    val_scores_ae = score_anomalies(
+        model_ae,
+        X_val_anomaly
+    )
+
+    threshold_ae = find_best_threshold(
+        val_scores_ae,
+        y_val
+    )
+
+    test_scores_ae = score_anomalies(
+        model_ae,
+        X_test_anomaly
+    )
+
+    predictions_ae = np.where(
+        test_scores_ae > threshold_ae,
+        -1,
+        1
+    )
+
+    results["Autoencoder"] = calculate_metrics(
+        y_test,
+        predictions_ae,
+        test_scores_ae
+    )
+
+    thresholds["Autoencoder"] = threshold_ae
+
+    print(
+        f"AE threshold: {threshold_ae:.5f} | "
+        f"F1: {results['Autoencoder']['f1']:.4f}"
+    )
+
+    # ---------------------------------------------------------
+    # Variational Autoencoder
+    # ---------------------------------------------------------
+
+    print("Training VAE...")
+
+    model_vae, _ = train_vae(
+        X_train,
+        contamination=config.INJECTION_FRAC,
+        latent_dim=config.BOTTLENECK_DIM,
+        epochs=config.EPOCHS,
+        batch_size=config.BATCH_SIZE,
+        random_state=seed
+    )
+
+    val_scores_vae = score_anomalies_vae(
+        model_vae,
+        X_val_anomaly
+    )
+
+    threshold_vae = find_best_threshold(
+        val_scores_vae,
+        y_val
+    )
+
+    test_scores_vae = score_anomalies_vae(
+        model_vae,
+        X_test_anomaly
+    )
+
+    predictions_vae = np.where(
+        test_scores_vae > threshold_vae,
+        -1,
+        1
+    )
+
+    results["VAE"] = calculate_metrics(
+        y_test,
+        predictions_vae,
+        test_scores_vae
+    )
+
+    thresholds["VAE"] = threshold_vae
+
+    print(
+        f"VAE threshold: {threshold_vae:.5f} | "
+        f"F1: {results['VAE']['f1']:.4f}"
+    )
+
+    # ---------------------------------------------------------
+    # Isolation Forest
+    # ---------------------------------------------------------
+
+    print("Training Isolation Forest...")
+
+    model_if = train_isolation_forest(
+        X_train,
+        contamination=config.INJECTION_FRAC,
+        n_estimators=200,
+        random_state=seed
+    )
+
+    val_scores_if = score_anomalies_if(
+        model_if,
+        X_val_anomaly
+    )
+
+    threshold_if = find_best_threshold(
+        val_scores_if,
+        y_val
+    )
+
+    test_scores_if = score_anomalies_if(
+        model_if,
+        X_test_anomaly
+    )
+
+    predictions_if = np.where(
+        test_scores_if > threshold_if,
+        -1,
+        1
+    )
+
+    results["Isolation Forest"] = calculate_metrics(
+        y_test,
+        predictions_if,
+        test_scores_if
+    )
+
+    thresholds["Isolation Forest"] = threshold_if
+
+    print(
+        f"IF threshold: {threshold_if:.5f} | "
+        f"F1: {results['Isolation Forest']['f1']:.4f}"
+    )
+
+    # ---------------------------------------------------------
+    # PCA
+    # ---------------------------------------------------------
+
+    print("Training PCA...")
+
+    model_pca = PCA(
+        n_components=config.BOTTLENECK_DIM,
+        random_state=seed
+    )
+
+    model_pca.fit(
+        X_train
+    )
+
+    val_scores_pca = score_anomalies_pca(
+        model_pca,
+        X_val_anomaly
+    )
+
+    threshold_pca = find_best_threshold(
+        val_scores_pca,
+        y_val
+    )
+
+    test_scores_pca = score_anomalies_pca(
+        model_pca,
+        X_test_anomaly
+    )
+
+    predictions_pca = np.where(
+        test_scores_pca > threshold_pca,
+        -1,
+        1
+    )
+
+    results["PCA"] = calculate_metrics(
+        y_test,
+        predictions_pca,
+        test_scores_pca
+    )
+
+    thresholds["PCA"] = threshold_pca
+
+    print(
+        f"PCA threshold: {threshold_pca:.5f} | "
+        f"F1: {results['PCA']['f1']:.4f}"
+    )
+
+    results["thresholds"] = thresholds
+    results["n_validation_anomalies"] = int(
+        len(val_indices)
+    )
+    results["n_test_anomalies"] = int(
+        len(test_indices)
+    )
+
+    return results
+
+
+def calculate_summary(all_results):
+    """Calculate mean, standard deviation and 95% confidence interval."""
+
+    models = [
+        "Autoencoder",
+        "VAE",
+        "Isolation Forest",
+        "PCA"
+    ]
+
+    metrics = [
+        "accuracy",
+        "precision",
+        "recall",
+        "f1",
+        "roc_auc",
+        "pr_auc",
+        "balanced_accuracy",
+        "mcc",
+        "specificity",
+        "fpr"
+    ]
+
+    summary = []
+
+    for model in models:
+
+        for metric in metrics:
+
+            values = np.array([
+                result[model][metric]
+                for result in all_results
+            ])
+
+            mean = np.mean(values)
+            sd = np.std(values, ddof=1)
+
+            sem = stats.sem(values)
+
+            ci = stats.t.interval(
+                0.95,
+                len(values) - 1,
+                loc=mean,
+                scale=sem
+            )
+
+            ci_lower = max(
+                0.0,
+                float(ci[0])
+            )
+
+            ci_upper = min(
+                1.0,
+                float(ci[1])
+            )
+
+            summary.append({
+                "model": model,
+                "metric": metric,
+                "mean": float(mean),
+                "sd": float(sd),
+                "ci_lower": ci_lower,
+                "ci_upper": ci_upper
+            })
+
+    return summary
+
+
+def main():
+    """Run multi-seed comparison."""
+
+    print("\n" + "█" * 80)
+    print("█ MULTI-SEED MODEL COMPARISON")
+    print("█" * 80)
+
+    print(f"\nRandom seeds: {SEEDS}")
+
+    # Load and preprocess the full dataset once
+    X, feature_names, preprocessor = load_data(
+        data_dir="data",
+        results_dir="results"
+    )
+
+    print("\n" + "=" * 80)
+    print("EXPERIMENTAL SETUP")
+    print("=" * 80)
+
+    print(
+        f"Dataset samples: {len(X)}"
+    )
+
+    print(
+        f"Features: {len(feature_names)}"
+    )
+
+    print(
+        f"Split: "
+        f"{config.TRAIN_SIZE*100:.0f}/"
+        f"{config.VAL_SIZE*100:.0f}/"
+        f"{config.TEST_SIZE*100:.0f}"
+    )
+
+    print(
+        f"Injection fraction: "
+        f"{config.INJECTION_FRAC}"
+    )
+
+    print(
+        f"Noise scale: "
+        f"{config.NOISE_SCALE}"
+    )
+
+    print(
+        f"Bottleneck dimension: "
+        f"{config.BOTTLENECK_DIM}"
+    )
+
+    # Run all seeds
+    all_results = []
+
+    for seed in SEEDS:
+
+        result = run_seed(
+            X,
+            preprocessor,
+            seed
+        )
+
+        all_results.append(
+            result
+        )
+
+    # Calculate summary
+    summary = calculate_summary(
+        all_results
+    )
+
+    results_path = Path("results")
+    results_path.mkdir(exist_ok=True)
+
+    # Save individual results
+    rows = []
+
+    models = [
+        "Autoencoder",
+        "VAE",
+        "Isolation Forest",
+        "PCA"
+    ]
+
+    for result in all_results:
+
+        for model in models:
+
+            row = {
+                "seed": result["seed"],
+                "model": model
+            }
+
+            row.update(
+                result[model]
+            )
+
+            rows.append(
+                row
+            )
+
+    individual_df = pd.DataFrame(
+        rows
+    )
+
+    individual_df.to_csv(
+        results_path / "multiseed_individual_results.csv",
+        index=False
+    )
+
+    # Save summary
+    summary_df = pd.DataFrame(
+        summary
+    )
+
+    summary_df.to_csv(
+        results_path / "multiseed_summary.csv",
+        index=False
+    )
+
+    # Save complete JSON
+    output = {
+        "seeds": SEEDS,
+        "config": {
+            "train_size": config.TRAIN_SIZE,
+            "val_size": config.VAL_SIZE,
+            "test_size": config.TEST_SIZE,
+            "injection_frac": config.INJECTION_FRAC,
+            "noise_scale": config.NOISE_SCALE,
+            "bottleneck_dim": config.BOTTLENECK_DIM,
+            "epochs": config.EPOCHS,
+            "batch_size": config.BATCH_SIZE
+        },
+        "individual_results": all_results,
+        "summary": summary
+    }
+
+    with open(
+        results_path / "multiseed_results.json",
+        "w"
+    ) as f:
+
+        json.dump(
+            output,
+            f,
+            indent=2
+        )
+
+    # Print final summary
+    print("\n" + "=" * 80)
+    print("FINAL MULTI-SEED RESULTS")
+    print("=" * 80)
+
+    for model in models:
+
+        print(f"\n{model}")
+        print("-" * 50)
+
+        for result in summary:
+
+            if result["model"] != model:
+                continue
+
+            print(
+                f"{result['metric']:20s}: "
+                f"{result['mean']:.4f} ± "
+                f"{result['sd']:.4f} "
+                f"(95% CI: "
+                f"{result['ci_lower']:.4f} - "
+                f"{result['ci_upper']:.4f})"
+            )
+
+    print("\n✓ Multi-seed comparison complete.")
+    print("✓ Results saved in the results folder.")
+
+
+if __name__ == "__main__":
+    main()

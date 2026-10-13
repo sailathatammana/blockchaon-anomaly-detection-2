@@ -10,8 +10,9 @@ Runs two categories of controlled ablation experiments:
      Anomaly Severity (Noise Scale) — sweeps the Gaussian noise injected into
      synthetic anomalies [0.5, 1.0, 1.8, 2.5, 4.0]
 
-Each condition is evaluated using Precision, Recall, F1, and ROC-AUC.
-Results are printed to the console and saved as CSV files in results/ablation/.
+Each condition is evaluated across five random seeds using Precision, Recall,
+F1, and ROC-AUC. Results are printed to the console and saved as CSV files
+in results/ablation/.
 """
 
 import os
@@ -41,11 +42,13 @@ sys.path.insert(0, str(Path(__file__).parent))
 import config
 from data_loader import EducationalDataLoader
 from preprocessing import EducationalDataPreprocessor
-from autoencoder import score_anomalies, optimize_threshold
+from autoencoder import score_anomalies
 
 # ── Output directory ──────────────────────────────────────────────────────────
 ABLATION_DIR = Path("results") / "ablation"
 ABLATION_DIR.mkdir(parents=True, exist_ok=True)
+
+SEEDS = [41, 42, 43, 44, 45]
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -62,19 +65,9 @@ def build_autoencoder_variable(
     The hidden layer widths are fixed at [128, 64, 32] (first 3 slots).
     When n_hidden_layers < 3 only the first n layers are used; when it is
     4 a fourth layer of 16 neurons is appended on each side.
-
-    Args:
-        input_dim: Number of input features.
-        bottleneck_dim: Width of the bottleneck (compression) layer.
-        n_hidden_layers: Number of hidden layers on each side (encoder / decoder).
-                         Supported values: 1, 2, 3, 4.
-
-    Returns:
-        Compiled Keras Model.
     """
-    # Candidate hidden-layer widths (encoder side, outermost → bottleneck)
     candidate_widths = [128, 64, 32, 16]
-    widths = candidate_widths[:n_hidden_layers]   # e.g. depth=2 → [128, 64]
+    widths = candidate_widths[:n_hidden_layers]
 
     inp = keras.Input(shape=(input_dim,))
 
@@ -110,20 +103,8 @@ def train_autoencoder(
     val_split: float = 0.15,
     random_state: int = 41,
 ) -> tuple:
-    """Train the autoencoder and return the fitted model plus a training threshold.
+    """Train the autoencoder."""
 
-    Args:
-        X_train: Clean training data.
-        bottleneck_dim: Bottleneck width.
-        n_hidden_layers: Encoder / decoder depth.
-        epochs: Maximum training epochs.
-        batch_size: Mini-batch size.
-        val_split: Fraction held out for validation / early-stopping.
-        random_state: Reproducibility seed.
-
-    Returns:
-        (model, threshold) where threshold is the contamination-based percentile.
-    """
     np.random.seed(random_state)
     keras.utils.set_random_seed(random_state)
 
@@ -150,12 +131,7 @@ def train_autoencoder(
         verbose=0,
     )
 
-    X_hat = model.predict(X_train, verbose=0)
-    train_errors = np.mean((X_train - X_hat) ** 2, axis=1)
-    q = max(0.0, min(1.0, 1.0 - config.INJECTION_FRAC))
-    threshold = float(np.quantile(train_errors, q))
-
-    return model, threshold
+    return model
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -163,11 +139,8 @@ def train_autoencoder(
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def load_data(data_dir: str = "data", results_dir: str = "results") -> tuple:
-    """Load, preprocess and split the dataset once for all ablation runs.
+    """Load and preprocess the full dataset."""
 
-    Returns:
-        (X_train_scaled, X_test_scaled) or (None, None) on failure.
-    """
     data_path = Path(data_dir)
     results_path = Path(results_dir)
     results_path.mkdir(exist_ok=True)
@@ -181,16 +154,7 @@ def load_data(data_dir: str = "data", results_dir: str = "results") -> tuple:
         profiles = preprocessor.create_student_profiles(merged_df)
         X, _ = preprocessor.prepare_for_autoencoder(profiles)
 
-        X_train, X_test = train_test_split(
-            X,
-            test_size=config.TEST_SIZE,
-            random_state=config.SEED,
-        )
-
-        scaler, X_train_scaled = preprocessor.normalize_features(X_train)
-        X_test_scaled = scaler.transform(X_test)
-
-        return X_train_scaled, X_test_scaled
+        return X, preprocessor
 
     except Exception as exc:
         print(f"\n[ERROR] Data loading failed: {exc}")
@@ -199,59 +163,130 @@ def load_data(data_dir: str = "data", results_dir: str = "results") -> tuple:
         return None, None
 
 
+def split_data(X, preprocessor, random_state):
+    """Create a 60/15/25 split and normalize using training data only."""
+
+    X_train_val, X_test = train_test_split(
+        X,
+        test_size=config.TEST_SIZE,
+        random_state=random_state,
+    )
+
+    val_fraction = config.VAL_SIZE / (config.TRAIN_SIZE + config.VAL_SIZE)
+
+    X_train, X_val = train_test_split(
+        X_train_val,
+        test_size=val_fraction,
+        random_state=random_state,
+    )
+
+    scaler, X_train_scaled = preprocessor.normalize_features(X_train)
+    X_val_scaled = scaler.transform(X_val)
+    X_test_scaled = scaler.transform(X_test)
+
+    return X_train_scaled, X_val_scaled, X_test_scaled
+
+
 def inject_anomalies(
-    X_test: np.ndarray,
+    X_data: np.ndarray,
     injection_frac: float,
     noise_scale: float,
     random_state: int = 41,
 ) -> tuple:
-    """Inject Gaussian noise anomalies into a *copy* of X_test.
+    """Inject Gaussian noise anomalies into a copy of the data."""
 
-    Args:
-        X_test: Clean test features (not modified in-place).
-        injection_frac: Fraction of test samples to corrupt.
-        noise_scale: Standard deviation of injected Gaussian noise.
-        random_state: Seed for reproducibility.
-
-    Returns:
-        (X_test_corrupted, y_true) where y_true is 1 for normal, -1 for anomaly.
-    """
     rng = np.random.RandomState(random_state)
-    X_corrupted = X_test.copy()
-    n_test = len(X_test)
-    n_anomalies = int(n_test * injection_frac)
+    X_corrupted = X_data.copy()
+    n_samples = len(X_data)
+    n_anomalies = int(n_samples * injection_frac)
 
-    y_true = np.ones(n_test, dtype=int)
-    anomaly_indices = rng.choice(n_test, size=n_anomalies, replace=False)
+    y_true = np.ones(n_samples, dtype=int)
+    anomaly_indices = rng.choice(
+        n_samples,
+        size=n_anomalies,
+        replace=False
+    )
     y_true[anomaly_indices] = -1
 
-    noise = rng.normal(loc=0.0, scale=noise_scale,
-                       size=(n_anomalies, X_test.shape[1]))
+    noise = rng.normal(
+        loc=0.0,
+        scale=noise_scale,
+        size=(n_anomalies, X_data.shape[1])
+    )
     X_corrupted[anomaly_indices] += noise
 
     return X_corrupted, y_true
 
 
-def evaluate(model, X_test_corrupted, y_true) -> dict:
-    """Score predictions and return a metrics dict."""
-    test_scores = score_anomalies(model, X_test_corrupted)
+def find_best_threshold(scores, y_true) -> float:
+    """Find the threshold that maximizes F1 on validation data."""
 
-    # Optimise threshold on the same test set (F1 maximisation)
-    opt_threshold, _ = optimize_threshold(
-        model, X_test_corrupted, y_true, metric="f1"
+    thresholds = np.quantile(
+        scores,
+        np.linspace(0.05, 0.999, 400)
     )
 
+    best_threshold = thresholds[0]
+    best_f1 = 0.0
+
+    for threshold in thresholds:
+        preds = np.where(scores > threshold, -1, 1)
+
+        current_f1 = f1_score(
+            y_true,
+            preds,
+            pos_label=-1,
+            zero_division=0
+        )
+
+        if current_f1 > best_f1:
+            best_f1 = current_f1
+            best_threshold = threshold
+
+    return float(best_threshold)
+
+
+def evaluate(model, X_val_corrupted, y_val,
+             X_test_corrupted, y_test) -> dict:
+    """Select threshold on validation data and evaluate on test data."""
+
+    val_scores = score_anomalies(model, X_val_corrupted)
+    opt_threshold = find_best_threshold(val_scores, y_val)
+
+    test_scores = score_anomalies(model, X_test_corrupted)
     preds = np.where(test_scores > opt_threshold, -1, 1)
 
-    y_binary = (y_true == -1).astype(int)
+    y_binary = (y_test == -1).astype(int)
 
     return {
-        "accuracy":  float(accuracy_score(y_true, preds)),
-        "precision": float(precision_score(y_true, preds, pos_label=-1, zero_division=0)),
-        "recall":    float(recall_score(y_true, preds, pos_label=-1, zero_division=0)),
-        "f1":        float(f1_score(y_true, preds, pos_label=-1, zero_division=0)),
-        "roc_auc":   float(roc_auc_score(y_binary, test_scores)),
+        "accuracy": float(accuracy_score(y_test, preds)),
+        "precision": float(precision_score(
+            y_test, preds, pos_label=-1, zero_division=0
+        )),
+        "recall": float(recall_score(
+            y_test, preds, pos_label=-1, zero_division=0
+        )),
+        "f1": float(f1_score(
+            y_test, preds, pos_label=-1, zero_division=0
+        )),
+        "roc_auc": float(roc_auc_score(y_binary, test_scores)),
+        "threshold": float(opt_threshold),
     }
+
+
+def summarise_results(df: pd.DataFrame, varied_col: str) -> pd.DataFrame:
+    """Calculate mean and standard deviation across seeds."""
+
+    metrics = ["accuracy", "precision", "recall", "f1", "roc_auc"]
+
+    summary = df.groupby(varied_col)[metrics].agg(["mean", "std"])
+    summary.columns = [
+        f"{metric}_{stat}"
+        for metric, stat in summary.columns
+    ]
+    summary = summary.reset_index()
+
+    return summary
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -265,7 +300,13 @@ def _banner(title: str) -> None:
 
 
 def _print_results_table(df: pd.DataFrame, varied_col: str) -> None:
-    col_order = [varied_col, "accuracy", "precision", "recall", "f1", "roc_auc"]
+    col_order = [
+        varied_col,
+        "precision_mean", "precision_std",
+        "recall_mean", "recall_std",
+        "f1_mean", "f1_std",
+        "roc_auc_mean", "roc_auc_std",
+    ]
     col_order = [c for c in col_order if c in df.columns]
     print(df[col_order].to_string(index=False))
 
@@ -277,53 +318,92 @@ def _print_results_table(df: pd.DataFrame, varied_col: str) -> None:
 BOTTLENECK_SWEEP = [2, 4, 8, 16, 32]
 
 
-def study_bottleneck(X_train, X_test_clean) -> pd.DataFrame:
+def study_bottleneck(X, preprocessor) -> pd.DataFrame:
     """Sweep bottleneck dimension; all other settings match config defaults."""
+
     _banner("ARCHITECTURAL ABLATION — Bottleneck Dimension")
     print(f"  Sweep: {BOTTLENECK_SWEEP}")
     print(f"  Network depth (hidden layers per side): {3}  [fixed]")
     print(f"  Noise scale: {config.NOISE_SCALE}  [fixed]\n")
 
-    # Prepare a single fixed test set (same anomalies for fair comparison)
-    X_test_corrupted, y_true = inject_anomalies(
-        X_test_clean,
-        injection_frac=config.INJECTION_FRAC,
-        noise_scale=config.NOISE_SCALE,
-        random_state=config.SEED,
+    records = []
+
+    for seed in SEEDS:
+        print(f"\n  Seed {seed}")
+
+        X_train, X_val, X_test = split_data(
+            X, preprocessor, seed
+        )
+
+        X_val_corrupted, y_val = inject_anomalies(
+            X_val,
+            injection_frac=config.INJECTION_FRAC,
+            noise_scale=config.NOISE_SCALE,
+            random_state=seed,
+        )
+
+        X_test_corrupted, y_test = inject_anomalies(
+            X_test,
+            injection_frac=config.INJECTION_FRAC,
+            noise_scale=config.NOISE_SCALE,
+            random_state=seed + 1,
+        )
+
+        for bd in BOTTLENECK_SWEEP:
+            print(
+                f"  → bottleneck_dim = {bd:>2d}  ...",
+                end="",
+                flush=True
+            )
+
+            model = train_autoencoder(
+                X_train,
+                bottleneck_dim=bd,
+                n_hidden_layers=3,
+                epochs=config.EPOCHS,
+                batch_size=config.BATCH_SIZE,
+                random_state=seed,
+            )
+
+            metrics = evaluate(
+                model,
+                X_val_corrupted,
+                y_val,
+                X_test_corrupted,
+                y_test
+            )
+
+            records.append({
+                "seed": seed,
+                "bottleneck_dim": bd,
+                **metrics
+            })
+
+            print(
+                f"  Prec={metrics['precision']:.3f}  "
+                f"Rec={metrics['recall']:.3f}  "
+                f"F1={metrics['f1']:.3f}  "
+                f"AUC={metrics['roc_auc']:.3f}"
+            )
+
+            keras.backend.clear_session()
+
+    individual_df = pd.DataFrame(records)
+    individual_path = ABLATION_DIR / "bottleneck_ablation_individual.csv"
+    individual_df.to_csv(individual_path, index=False)
+
+    df = summarise_results(
+        individual_df,
+        "bottleneck_dim"
     )
 
-    records = []
-    for bd in BOTTLENECK_SWEEP:
-        print(f"  → bottleneck_dim = {bd:>2d}  ...", end="", flush=True)
-
-        model, _ = train_autoencoder(
-            X_train,
-            bottleneck_dim=bd,
-            n_hidden_layers=3,          # default depth
-            epochs=config.EPOCHS,
-            batch_size=config.BATCH_SIZE,
-            random_state=config.SEED,
-        )
-
-        metrics = evaluate(model, X_test_corrupted, y_true)
-        records.append({"bottleneck_dim": bd, **metrics})
-
-        print(
-            f"  Prec={metrics['precision']:.3f}  "
-            f"Rec={metrics['recall']:.3f}  "
-            f"F1={metrics['f1']:.3f}  "
-            f"AUC={metrics['roc_auc']:.3f}"
-        )
-
-        # Free GPU / CPU memory
-        keras.backend.clear_session()
-
-    df = pd.DataFrame(records)
     out_path = ABLATION_DIR / "bottleneck_ablation.csv"
     df.to_csv(out_path, index=False)
+
     print(f"\n  Results saved → {out_path}")
     print()
     _print_results_table(df, "bottleneck_dim")
+
     return df
 
 
@@ -334,51 +414,92 @@ def study_bottleneck(X_train, X_test_clean) -> pd.DataFrame:
 DEPTH_SWEEP = [1, 2, 3, 4]
 
 
-def study_depth(X_train, X_test_clean) -> pd.DataFrame:
+def study_depth(X, preprocessor) -> pd.DataFrame:
     """Sweep number of hidden encoder/decoder layers; bottleneck kept at default."""
+
     _banner("ARCHITECTURAL ABLATION — Network Depth")
     print(f"  Sweep (hidden layers per side): {DEPTH_SWEEP}")
     print(f"  Bottleneck dim: {config.BOTTLENECK_DIM}  [fixed]")
     print(f"  Noise scale: {config.NOISE_SCALE}  [fixed]\n")
 
-    X_test_corrupted, y_true = inject_anomalies(
-        X_test_clean,
-        injection_frac=config.INJECTION_FRAC,
-        noise_scale=config.NOISE_SCALE,
-        random_state=config.SEED,
+    records = []
+
+    for seed in SEEDS:
+        print(f"\n  Seed {seed}")
+
+        X_train, X_val, X_test = split_data(
+            X, preprocessor, seed
+        )
+
+        X_val_corrupted, y_val = inject_anomalies(
+            X_val,
+            injection_frac=config.INJECTION_FRAC,
+            noise_scale=config.NOISE_SCALE,
+            random_state=seed,
+        )
+
+        X_test_corrupted, y_test = inject_anomalies(
+            X_test,
+            injection_frac=config.INJECTION_FRAC,
+            noise_scale=config.NOISE_SCALE,
+            random_state=seed + 1,
+        )
+
+        for depth in DEPTH_SWEEP:
+            print(
+                f"  → n_hidden_layers = {depth}  ...",
+                end="",
+                flush=True
+            )
+
+            model = train_autoencoder(
+                X_train,
+                bottleneck_dim=config.BOTTLENECK_DIM,
+                n_hidden_layers=depth,
+                epochs=config.EPOCHS,
+                batch_size=config.BATCH_SIZE,
+                random_state=seed,
+            )
+
+            metrics = evaluate(
+                model,
+                X_val_corrupted,
+                y_val,
+                X_test_corrupted,
+                y_test
+            )
+
+            records.append({
+                "seed": seed,
+                "n_hidden_layers": depth,
+                **metrics
+            })
+
+            print(
+                f"  Prec={metrics['precision']:.3f}  "
+                f"Rec={metrics['recall']:.3f}  "
+                f"F1={metrics['f1']:.3f}  "
+                f"AUC={metrics['roc_auc']:.3f}"
+            )
+
+            keras.backend.clear_session()
+
+    individual_df = pd.DataFrame(records)
+    individual_path = ABLATION_DIR / "depth_ablation_individual.csv"
+    individual_df.to_csv(individual_path, index=False)
+
+    df = summarise_results(
+        individual_df,
+        "n_hidden_layers"
     )
 
-    records = []
-    for depth in DEPTH_SWEEP:
-        print(f"  → n_hidden_layers = {depth}  ...", end="", flush=True)
-
-        model, _ = train_autoencoder(
-            X_train,
-            bottleneck_dim=config.BOTTLENECK_DIM,   # default bottleneck
-            n_hidden_layers=depth,
-            epochs=config.EPOCHS,
-            batch_size=config.BATCH_SIZE,
-            random_state=config.SEED,
-        )
-
-        metrics = evaluate(model, X_test_corrupted, y_true)
-        records.append({"n_hidden_layers": depth, **metrics})
-
-        print(
-            f"  Prec={metrics['precision']:.3f}  "
-            f"Rec={metrics['recall']:.3f}  "
-            f"F1={metrics['f1']:.3f}  "
-            f"AUC={metrics['roc_auc']:.3f}"
-        )
-
-        keras.backend.clear_session()
-
-    df = pd.DataFrame(records)
     out_path = ABLATION_DIR / "depth_ablation.csv"
     df.to_csv(out_path, index=False)
+
     print(f"\n  Results saved → {out_path}")
     print()
     _print_results_table(df, "n_hidden_layers")
+
     return df
 
 
@@ -389,61 +510,107 @@ def study_depth(X_train, X_test_clean) -> pd.DataFrame:
 NOISE_SWEEP = [0.5, 1.0, 1.8, 2.5, 4.0]
 
 
-def study_noise_scale(X_train, X_test_clean) -> pd.DataFrame:
+def study_noise_scale(X, preprocessor) -> pd.DataFrame:
     """Sweep the noise scale used during anomaly injection.
 
-    The model is retrained once with default settings; only the test-set
-    corruption changes across conditions.  This isolates the effect of anomaly
+    The model is retrained once per seed with default settings; only the
+    corruption changes across conditions. This isolates the effect of anomaly
     severity from any training-side confound.
     """
+
     _banner("DATA ABLATION — Anomaly Severity (Noise Scale)")
     print(f"  Sweep: {NOISE_SWEEP}")
     print(f"  Bottleneck dim: {config.BOTTLENECK_DIM}  [fixed]")
     print(f"  Network depth:  3  [fixed]\n")
 
-    # Train model ONCE with default architecture
-    print("  Training baseline autoencoder (used for all noise conditions) ...",
-          end="", flush=True)
-
-    model, _ = train_autoencoder(
-        X_train,
-        bottleneck_dim=config.BOTTLENECK_DIM,
-        n_hidden_layers=3,
-        epochs=config.EPOCHS,
-        batch_size=config.BATCH_SIZE,
-        random_state=config.SEED,
-    )
-    print("  done.\n")
-
     records = []
-    for ns in NOISE_SWEEP:
-        print(f"  → noise_scale = {ns:.1f}  ...", end="", flush=True)
 
-        X_test_corrupted, y_true = inject_anomalies(
-            X_test_clean,
-            injection_frac=config.INJECTION_FRAC,
-            noise_scale=ns,
-            random_state=config.SEED,
+    for seed in SEEDS:
+        print(f"\n  Seed {seed}")
+
+        X_train, X_val, X_test = split_data(
+            X, preprocessor, seed
         )
 
-        metrics = evaluate(model, X_test_corrupted, y_true)
-        records.append({"noise_scale": ns, **metrics})
-
+        # Train model ONCE for this seed with default architecture
         print(
-            f"  Prec={metrics['precision']:.3f}  "
-            f"Rec={metrics['recall']:.3f}  "
-            f"F1={metrics['f1']:.3f}  "
-            f"AUC={metrics['roc_auc']:.3f}"
+            "  Training baseline autoencoder "
+            "(used for all noise conditions) ...",
+            end="",
+            flush=True
         )
 
-    keras.backend.clear_session()
+        model = train_autoencoder(
+            X_train,
+            bottleneck_dim=config.BOTTLENECK_DIM,
+            n_hidden_layers=3,
+            epochs=config.EPOCHS,
+            batch_size=config.BATCH_SIZE,
+            random_state=seed,
+        )
 
-    df = pd.DataFrame(records)
+        print("  done.\n")
+
+        for ns in NOISE_SWEEP:
+            print(
+                f"  → noise_scale = {ns:.1f}  ...",
+                end="",
+                flush=True
+            )
+
+            X_val_corrupted, y_val = inject_anomalies(
+                X_val,
+                injection_frac=config.INJECTION_FRAC,
+                noise_scale=ns,
+                random_state=seed,
+            )
+
+            X_test_corrupted, y_test = inject_anomalies(
+                X_test,
+                injection_frac=config.INJECTION_FRAC,
+                noise_scale=ns,
+                random_state=seed + 1,
+            )
+
+            metrics = evaluate(
+                model,
+                X_val_corrupted,
+                y_val,
+                X_test_corrupted,
+                y_test
+            )
+
+            records.append({
+                "seed": seed,
+                "noise_scale": ns,
+                **metrics
+            })
+
+            print(
+                f"  Prec={metrics['precision']:.3f}  "
+                f"Rec={metrics['recall']:.3f}  "
+                f"F1={metrics['f1']:.3f}  "
+                f"AUC={metrics['roc_auc']:.3f}"
+            )
+
+        keras.backend.clear_session()
+
+    individual_df = pd.DataFrame(records)
+    individual_path = ABLATION_DIR / "noise_scale_ablation_individual.csv"
+    individual_df.to_csv(individual_path, index=False)
+
+    df = summarise_results(
+        individual_df,
+        "noise_scale"
+    )
+
     out_path = ABLATION_DIR / "noise_scale_ablation.csv"
     df.to_csv(out_path, index=False)
+
     print(f"\n  Results saved → {out_path}")
     print()
     _print_results_table(df, "noise_scale")
+
     return df
 
 
@@ -453,22 +620,35 @@ def study_noise_scale(X_train, X_test_clean) -> pd.DataFrame:
 
 def _save_summary(df_bottleneck, df_depth, df_noise) -> None:
     """Concatenate all results into a single summary CSV."""
+
     def _tag(df, study, varied):
         out = df.copy()
         out.insert(0, "study", study)
         out.insert(1, "varied_param", varied)
-        # Rename the varied column to a generic 'value' for stacking
         out = out.rename(columns={varied: "param_value"})
         return out
 
     summary = pd.concat([
-        _tag(df_bottleneck, "architectural_bottleneck", "bottleneck_dim"),
-        _tag(df_depth,      "architectural_depth",      "n_hidden_layers"),
-        _tag(df_noise,      "data_noise_scale",         "noise_scale"),
+        _tag(
+            df_bottleneck,
+            "architectural_bottleneck",
+            "bottleneck_dim"
+        ),
+        _tag(
+            df_depth,
+            "architectural_depth",
+            "n_hidden_layers"
+        ),
+        _tag(
+            df_noise,
+            "data_noise_scale",
+            "noise_scale"
+        ),
     ], ignore_index=True)
 
     out_path = ABLATION_DIR / "ablation_summary.csv"
     summary.to_csv(out_path, index=False)
+
     print(f"\n  Full summary saved → {out_path}")
 
 
@@ -482,6 +662,7 @@ def main() -> None:
     print("\n" + "█" * 70)
     print("█  AUTOENCODER ABLATION STUDY")
     print("█  Studies: Bottleneck Dim | Network Depth | Noise Scale")
+    print("█  Random Seeds: 41, 42, 43, 44, 45")
     print("█" * 70)
 
     # Fix global seeds
@@ -491,28 +672,58 @@ def main() -> None:
 
     # ── Load data once ────────────────────────────────────────────────────────
     print("\n[Step 1/4]  Loading and preprocessing data ...")
-    X_train, X_test_clean = load_data(data_dir="data", results_dir="results")
 
-    if X_train is None:
-        print("\n[ABORT]  Data loading failed — cannot run ablation studies.")
+    X, preprocessor = load_data(
+        data_dir="data",
+        results_dir="results"
+    )
+
+    if X is None:
+        print(
+            "\n[ABORT]  Data loading failed — "
+            "cannot run ablation studies."
+        )
         sys.exit(1)
 
-    print(f"  Training samples : {X_train.shape[0]}")
-    print(f"  Test samples     : {X_test_clean.shape[0]}")
-    print(f"  Features         : {X_train.shape[1]}")
+    print(f"  Total samples : {X.shape[0]}")
+    print(f"  Features      : {X.shape[1]}")
+    print("  Split         : 60/15/25")
+    print(f"  Seeds         : {SEEDS}")
 
     # ── Run studies ───────────────────────────────────────────────────────────
-    print("\n[Step 2/4]  Architectural Ablation — Bottleneck Dimension")
-    df_bottleneck = study_bottleneck(X_train, X_test_clean)
+    print(
+        "\n[Step 2/4]  "
+        "Architectural Ablation — Bottleneck Dimension"
+    )
+    df_bottleneck = study_bottleneck(
+        X,
+        preprocessor
+    )
 
-    print("\n[Step 3/4]  Architectural Ablation — Network Depth")
-    df_depth = study_depth(X_train, X_test_clean)
+    print(
+        "\n[Step 3/4]  "
+        "Architectural Ablation — Network Depth"
+    )
+    df_depth = study_depth(
+        X,
+        preprocessor
+    )
 
-    print("\n[Step 4/4]  Data Ablation — Anomaly Severity (Noise Scale)")
-    df_noise = study_noise_scale(X_train, X_test_clean)
+    print(
+        "\n[Step 4/4]  "
+        "Data Ablation — Anomaly Severity (Noise Scale)"
+    )
+    df_noise = study_noise_scale(
+        X,
+        preprocessor
+    )
 
     # ── Save combined summary ─────────────────────────────────────────────────
-    _save_summary(df_bottleneck, df_depth, df_noise)
+    _save_summary(
+        df_bottleneck,
+        df_depth,
+        df_noise
+    )
 
     print("\n" + "█" * 70)
     print("█  ALL ABLATION STUDIES COMPLETE ✓")
